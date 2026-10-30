@@ -14,9 +14,19 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
     // l'esplorazione vive in un'unica richiesta: un retry ripartirebbe da zero duplicando gli stati
     maxRequestRetries: 0,
     // un contesto isolato per pagina: cookie e tab separati tra un sito e l'altro
-    launchContext: { useIncognitoPages: true },
-    // Crawlee di default randomizza la viewport per sessione: renderebbe instabili i rettangoli
-    browserPoolOptions: { useFingerprints: false },
+    launchContext: {
+      useIncognitoPages: true,
+      // headful (finestra visibile) quando headless è false
+      launchOptions: { headless: cfg.headless },
+    },
+    browserPoolOptions: {
+      // Crawlee di default randomizza la viewport per sessione: renderebbe instabili i rettangoli
+      useFingerprints: false,
+      // ogni pagina incognito ha il suo contesto: il locale fissa navigator.language e Accept-Language
+      prePageCreateHooks: [
+        (_pageId, _controller, pageOptions) => { if (pageOptions) pageOptions.locale = cfg.locale; },
+      ],
+    },
     preNavigationHooks: [
       async ({ page }) => { await page.setViewportSize(cfg.viewport); },
     ],

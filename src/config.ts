@@ -15,7 +15,9 @@ export interface CrawlConfig {
     maxBlockLength: number;
   };
   actionTimeoutMs: number;
-  screenshots: boolean;
+  screenshots: boolean;         // salva un'immagine PNG di ogni stato (solo per debug visivo)
+  headless: boolean;            // false: apre una finestra del browser per vedere il crawler in azione
+  locale: string;               // lingua chiesta ai siti: tiene coerenti testi e blocklist
   blocklist: string[];          // testi da non cliccare (es. logout)
 }
 
@@ -34,6 +36,12 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // (consigli, caroselli) conviene disattivare inStateFingerprint
   text: { inElementId: true, inStateFingerprint: true, maxBlocks: 2000, maxBlockLength: 200 },
   actionTimeoutMs: 5_000,
-  screenshots: true,
-  blocklist: ['logout', 'esci', 'elimina', 'delete'],
+  // immagini PNG degli stati: non servono all'esplorazione, solo a ispezionarla a occhio
+  screenshots: false,
+  // HEADLESS=false npm start per vedere il browser
+  headless: process.env.HEADLESS !== 'false',
+  // locale del browser e header Accept-Language: i siti multilingua rispondono in inglese
+  locale: 'en-US',
+  // confronto per sottostringa, senza distinzione di maiuscole, su testo, aria-label e href
+  blocklist: ['logout', 'log out', 'sign out', 'quit'],
 });
