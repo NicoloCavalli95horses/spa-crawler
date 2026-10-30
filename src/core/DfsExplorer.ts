@@ -76,6 +76,7 @@ export class DfsExplorer {
     if (this.store.has(next.id)) return null;   // stato già visto: niente ricorsione
 
     await this.store.save(page, next);
+    await this.graph.persist();   // il grafo cresce insieme agli stati: chi legge a esplorazione in corso lo vede aggiornato
     log.info(`Nuovo stato ${next.id} a profondità ${next.depth} (${next.clickables.length} cliccabili)`);
     return next;
   }

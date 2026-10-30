@@ -84,6 +84,16 @@ Everything is in [src/config.ts](https://www.google.com/search?q=src/config.ts).
 | `screenshots` | `false` | Saves a PNG of each state. Useful only for visually inspecting results. |
 | `blocklist` | `logout, quit, delete` | Substrings (case-insensitive) of text, `aria-label`, or `href` of elements that should never be clicked. |
 
+## Authentication (protected areas)
+
+Optional. Credentials are sent with every HTTP request to the explored site and its subdomains (navigations, fetch/XHR, resources); requests to third-party domains never receive them. Set them through environment variables (so secrets stay out of the repo) or the `auth` field in [src/config.ts](src/config.ts):
+
+```bash
+AUTH_BEARER=eyJ... START_URL=https://www.busuu.com/dashboard/timeline/a1 npm start
+AUTH_COOKIES='sid=abc; remember=1' npm start     # same format as the DevTools Cookie header
+AUTH_HEADERS='{"X-Api-Key":"k"}' npm start      # any extra header; overrides AUTH_BEARER's Authorization
+```
+
 ## Browser extension (Chrome)
 
 The crawler can load an unpacked Chrome extension and call functions it exposes on `window` at the start or end of each site's analysis. Declare it in [src/config.ts](src/config.ts):
@@ -106,12 +116,24 @@ extension: {
 
 ## Output
 
-Crawlee writes to `storage/` (ignored by git):
+Each analysis gets its own folder `storage/sites/<site>_<timestamp>/` (e.g. `google.com_2026-10-30T12-16-20`):
 
-* `storage/datasets/default/` contains a JSON record per state: ID, URL, depth, click path from the root, clickables, and visible texts. With multiple sites, each record also has a `site` field.
-* `storage/key_value_stores/default/` contains the graph `<site>--state-graph.json` with edges `{ from, to, action }`. When `screenshots` is enabled, it also contains images `<site>--state-<id>.png`. The Tranco script adds the `tranco-summary.json` summary.
+* `states.json`: JSON array with one record per state (ID, URL, depth, click path from the root, clickables, visible texts). It stays valid JSON while the crawl is running.
+* `state-graph.json`: the graph, edges `{ from, to, action }`. Updated at every new state.
+* `extension-end-<fn>.json`: result of the browser extension call (see above), written at the end.
+* `state-<id>.png`: only when `screenshots` is enabled.
 
-Crawlee clears `storage/` at the start of each run.
+Crawlee's own bookkeeping (request queue, statistics) stays in `storage/{datasets,key_value_stores,request_queues}` and is cleared at the start of each run; `storage/sites/` is never cleared.
+
+## Statistics daemon
+
+```bash
+npm run stats                    # refreshes every 5s, works while crawls are running
+npm run stats -- --once          # single pass
+npm run stats -- --interval 10 --dir storage/sites
+```
+
+Reads every folder in `storage/sites/` and writes `storage/sites/_stats.json` with a per-site row and the averages of: total states, total edges (all sites, including those still running) and `Potential IDOR reported` from the extension (only sites whose extension result is already there).
 
 ## Tranco List
 

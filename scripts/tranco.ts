@@ -5,9 +5,11 @@
  *   npm run tranco -- --list-id PYK6J      # lista fissa, per esecuzioni riproducibili
  */
 import { parseArgs } from 'node:util';
-import { Dataset, KeyValueStore, log } from 'crawlee';
+import { KeyValueStore, log } from 'crawlee';
 import { runCrawler } from '../src/main';
 import { config, type CrawlConfig } from '../src/config';
+import { collect } from '../src/stats/aggregate';
+import { SITES_DIR } from '../src/state/output/FileOutput';
 
 const TRANCO = 'https://tranco-list.eu';
 
@@ -61,9 +63,9 @@ log.info(`Limiti per sito: profondità ${cfg.maxDepth}, ${cfg.maxStates} stati, 
 const stats = await runCrawler(domains.map((d) => `https://${d}/`), cfg);
 
 // riepilogo per sito, salvato anche accanto ai risultati
-const { items } = await Dataset.getData();
+// cartelle ordinate per nome: per ogni sito l'ultima analisi è quella di questa esecuzione
 const statesBySite = new Map<string, number>();
-for (const item of items) statesBySite.set(item.site, (statesBySite.get(item.site) ?? 0) + 1);
+for (const s of (await collect(SITES_DIR)).perSite) statesBySite.set(s.site, s.states);
 
 const summary = {
   listId,

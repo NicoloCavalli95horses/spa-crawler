@@ -13,7 +13,7 @@ import { StateFingerprinter } from './state/StateFingerprinter';
 import { StateCapturer } from './state/StateCapturer';
 import { StateStore } from './state/StateStore';
 import { StateGraph } from './state/StateGraph';
-import { CrawleeOutput } from './state/output/CrawleeOutput';
+import { FileOutput } from './state/output/FileOutput';
 
 /**
  * @param rootUrl URL da cui parte (e a cui torna) l'esplorazione, già dopo i redirect
@@ -23,8 +23,8 @@ export function buildExplorer(
   rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname,
 ): DfsExplorer {
   // 1. foglie: nessuna dipendenza da altri moduli
-  // un prefisso per sito tiene separati screenshot e grafi quando si esplorano più siti
-  const output = new CrawleeOutput(site);
+  // una cartella per sito e per esecuzione: <sito>_<timestamp>
+  const output = new FileOutput(site);
   const selectorBuilder = new SelectorBuilder({
     gridPx: cfg.rectGridPx, includeText: cfg.text.inElementId,
   });

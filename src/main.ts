@@ -3,6 +3,7 @@ import { PlaywrightCrawler, type FinalStatistics } from 'crawlee';
 import { config as defaultConfig, type CrawlConfig, type ExtensionConfig } from './config';
 import { buildExplorer } from './buildExplorer';
 import { extensionLaunchArgs } from './browser/ExtensionCalls';
+import { applyAuth } from './browser/Auth';
 
 /** Margine oltre il budget di esplorazione: cattura finale e salvataggio del grafo. */
 const HANDLER_MARGIN_SECS = 120;
@@ -54,7 +55,10 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       ],
     },
     preNavigationHooks: [
-      async ({ page }) => { await page.setViewportSize(cfg.viewport); },
+      async ({ page, request }) => {
+        await page.setViewportSize(cfg.viewport);
+        if (cfg.auth) await applyAuth(page.context(), cfg.auth, request.url);
+      },
     ],
     async requestHandler({ page, request, log }) {
       // dopo i redirect (google.com -> www.google.com) l'origine giusta è quella caricata

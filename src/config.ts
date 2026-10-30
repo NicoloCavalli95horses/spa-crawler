@@ -9,6 +9,12 @@ export interface ExtensionConfig {
   calls: ExtensionCall[];
 }
 
+export interface AuthConfig {
+  bearerToken?: string;                  // diventa `Authorization: Bearer <token>`
+  headers?: Record<string, string>;      // header aggiuntivi (hanno la precedenza su bearerToken)
+  cookies?: Record<string, string>;      // cookie di sessione, impostati sul dominio del sito
+}
+
 export interface CrawlConfig {
   startUrl: string;
   maxDepth: number;
@@ -31,7 +37,25 @@ export interface CrawlConfig {
   locale: string;               // lingua chiesta ai siti: tiene coerenti testi e blocklist
   blocklist: string[];          // testi da non cliccare (es. logout)
   extension?: ExtensionConfig;  // estensione Chrome da caricare (opzionale)
+  auth?: AuthConfig;            // credenziali inviate a ogni richiesta verso il sito esplorato (opzionale)
 }
+
+/** "a=1; b=2" -> { a: '1', b: '2' } (formato dell'header Cookie copiato dai DevTools). */
+function parseCookies(raw: string): Record<string, string> {
+  return Object.fromEntries(raw.split(';').map((p) => p.trim()).filter(Boolean).map((p) => {
+    const i = p.indexOf('=');
+    return [p.slice(0, i), p.slice(i + 1)];
+  }));
+}
+
+const auth: AuthConfig | undefined =
+  process.env.AUTH_BEARER || process.env.AUTH_COOKIES || process.env.AUTH_HEADERS
+    ? {
+        bearerToken: process.env.AUTH_BEARER,
+        cookies: process.env.AUTH_COOKIES ? parseCookies(process.env.AUTH_COOKIES) : undefined,
+        headers: process.env.AUTH_HEADERS ? JSON.parse(process.env.AUTH_HEADERS) : undefined,
+      }
+    : undefined;
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
   // serve il protocollo, altrimenti Crawlee scarta l'URL
@@ -59,6 +83,9 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // estensione Chrome: i risultati delle chiamate finiscono nel KeyValueStore come
   // `<sito>--extension-<when>-<fn>`. Le funzioni devono stare nel mondo MAIN della pagina
   // (content script con "world": "MAIN" nel manifest), altrimenti window non le vede.
+  // autenticazione, solo da variabili d'ambiente per non committare segreti:
+  //   AUTH_BEARER=<token>  AUTH_COOKIES='sid=abc; lang=it'  AUTH_HEADERS='{"X-Api-Key":"k"}'
+  auth,
   extension: {
     path: '../rapidor/packages/react-devtools-extensions/chrome/build/unpacked',
     calls: [
