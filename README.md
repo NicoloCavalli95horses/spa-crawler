@@ -84,6 +84,26 @@ Everything is in [src/config.ts](https://www.google.com/search?q=src/config.ts).
 | `screenshots` | `false` | Saves a PNG of each state. Useful only for visually inspecting results. |
 | `blocklist` | `logout, quit, delete` | Substrings (case-insensitive) of text, `aria-label`, or `href` of elements that should never be clicked. |
 
+## Browser extension (Chrome)
+
+The crawler can load an unpacked Chrome extension and call functions it exposes on `window` at the start or end of each site's analysis. Declare it in [src/config.ts](src/config.ts):
+
+```ts
+extension: {
+  path: './extensions/rapidor',   // folder containing manifest.json
+  calls: [
+    { fn: '__RAPIDOR__init', when: 'start' },
+    { fn: '__RAPIDOR__getData', when: 'end', args: [] },  // args optional
+  ],
+},
+```
+
+* `start`: before the first state is captured. `end`: after the last state (also when the exploration stops on an error), on the page as it was left by the last click.
+* Return values (JSON-serializable, promises are awaited) are saved in `storage/key_value_stores/default/<site>--extension-<when>-<fn>.json`.
+* The functions must live in the page's `MAIN` world: declare the content script with `"world": "MAIN"` in `manifest.json`, otherwise `window` does not see them.
+* A missing function (waits up to `actionTimeoutMs`) or a failing call logs a warning and never stops the crawl.
+* With an extension, each site gets its own Chromium with a temporary profile (isolation is the same as incognito, but memory use is higher). Headless uses Chromium's new headless mode (`npx playwright install chromium`).
+
 ## Output
 
 Crawlee writes to `storage/` (ignored by git):

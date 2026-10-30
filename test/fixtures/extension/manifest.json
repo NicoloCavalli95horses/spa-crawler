@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Test extension",
+  "version": "1.0",
+  "content_scripts": [
+    { "matches": ["http://*/*", "https://*/*"], "js": ["api.js"], "world": "MAIN", "run_at": "document_start" }
+  ]
+}

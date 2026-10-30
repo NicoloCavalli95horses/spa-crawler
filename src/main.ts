@@ -1,12 +1,38 @@
 import { pathToFileURL } from 'node:url';
 import { PlaywrightCrawler, type FinalStatistics } from 'crawlee';
-import { config as defaultConfig, type CrawlConfig } from './config';
+import { config as defaultConfig, type CrawlConfig, type ExtensionConfig } from './config';
 import { buildExplorer } from './buildExplorer';
+import { extensionLaunchArgs } from './browser/ExtensionCalls';
 
 /** Margine oltre il budget di esplorazione: cattura finale e salvataggio del grafo. */
 const HANDLER_MARGIN_SECS = 120;
 
+/**
+ * Chrome carica le estensioni solo in un contesto persistente, con il nuovo headless
+ * (channel 'chromium'; la headless shell di default non le supporta).
+ * Un browser per sito (maxOpenPagesPerBrowser: 1) con profilo temporaneo (userDataDir: '')
+ * mantiene l'isolamento di cookie e storage che altrimenti danno le pagine incognito.
+ */
+function extensionBrowserOptions(cfg: CrawlConfig & { extension: ExtensionConfig }) {
+  return {
+    launchContext: {
+      useIncognitoPages: false,
+      userDataDir: '',
+      launchOptions: {
+        headless: cfg.headless,
+        channel: 'chromium',
+        args: extensionLaunchArgs(cfg.extension),
+        // in un contesto persistente le opzioni di pagina vanno date al lancio
+        locale: cfg.locale,
+        viewport: cfg.viewport,
+      },
+    },
+    browserPoolOptions: { useFingerprints: false, maxOpenPagesPerBrowser: 1 },
+  };
+}
+
 export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawler {
+  const ext = cfg.extension ? extensionBrowserOptions({ ...cfg, extension: cfg.extension }) : undefined;
   return new PlaywrightCrawler({
     // ogni sito ha la sua pagina e il suo explorer: i siti possono girare in parallelo
     maxConcurrency: cfg.concurrency,
@@ -14,12 +40,12 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
     // l'esplorazione vive in un'unica richiesta: un retry ripartirebbe da zero duplicando gli stati
     maxRequestRetries: 0,
     // un contesto isolato per pagina: cookie e tab separati tra un sito e l'altro
-    launchContext: {
+    launchContext: ext?.launchContext ?? {
       useIncognitoPages: true,
       // headful (finestra visibile) quando headless è false
       launchOptions: { headless: cfg.headless },
     },
-    browserPoolOptions: {
+    browserPoolOptions: ext?.browserPoolOptions ?? {
       // Crawlee di default randomizza la viewport per sessione: renderebbe instabili i rettangoli
       useFingerprints: false,
       // ogni pagina incognito ha il suo contesto: il locale fissa navigator.language e Accept-Language

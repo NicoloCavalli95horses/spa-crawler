@@ -7,6 +7,7 @@ import { ClickableExtractor } from './extraction/ClickableExtractor';
 import { PageTextExtractor } from './extraction/PageTextExtractor';
 import { StabilityWaiter } from './browser/StabilityWaiter';
 import { ActionExecutor } from './browser/ActionExecutor';
+import { ExtensionCalls } from './browser/ExtensionCalls';
 import { StateNavigator } from './browser/StateNavigator';
 import { StateFingerprinter } from './state/StateFingerprinter';
 import { StateCapturer } from './state/StateCapturer';
@@ -47,5 +48,6 @@ export function buildExplorer(
   return new DfsExplorer(
     waiter, executor, capturer, navigator, store, graph,
     { maxDepth: cfg.maxDepth, maxStates: cfg.maxStates, maxDurationSecs: cfg.maxDurationSecs },
+    cfg.extension && new ExtensionCalls(cfg.extension, output, cfg.actionTimeoutMs),
   );
 }

@@ -35,3 +35,11 @@ export interface IOutputSink {
   saveFile(key: string, data: Buffer, contentType: string): Promise<string>;
   saveJson(key: string, value: unknown): Promise<void>;
 }
+
+/** Punti in cui codice esterno (es. un'estensione del browser) osserva l'esplorazione. */
+export interface IExplorationHooks {
+  /** Prima della cattura dello stato iniziale. */
+  onStart(page: Page): Promise<void>;
+  /** Dopo l'ultimo stato, anche se l'esplorazione è stata interrotta da un errore. */
+  onEnd(page: Page): Promise<void>;
+}

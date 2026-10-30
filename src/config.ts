@@ -1,3 +1,14 @@
+export interface ExtensionCall {
+  fn: string;                    // nome su window, es. '__RAPIDOR__getData'
+  when: 'start' | 'end';         // start: prima dell'esplorazione; end: dopo l'ultimo stato
+  args?: unknown[];              // argomenti, serializzabili in JSON
+}
+
+export interface ExtensionConfig {
+  path: string;                  // cartella dell'estensione (quella con manifest.json), non pacchettizzata
+  calls: ExtensionCall[];
+}
+
 export interface CrawlConfig {
   startUrl: string;
   maxDepth: number;
@@ -19,6 +30,7 @@ export interface CrawlConfig {
   headless: boolean;            // false: apre una finestra del browser per vedere il crawler in azione
   locale: string;               // lingua chiesta ai siti: tiene coerenti testi e blocklist
   blocklist: string[];          // testi da non cliccare (es. logout)
+  extension?: ExtensionConfig;  // estensione Chrome da caricare (opzionale)
 }
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
@@ -44,4 +56,14 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   locale: 'en-US',
   // confronto per sottostringa, senza distinzione di maiuscole, su testo, aria-label e href
   blocklist: ['logout', 'log out', 'sign out', 'quit'],
-});
+  // estensione Chrome: i risultati delle chiamate finiscono nel KeyValueStore come
+  // `<sito>--extension-<when>-<fn>`. Le funzioni devono stare nel mondo MAIN della pagina
+  // (content script con "world": "MAIN" nel manifest), altrimenti window non le vede.
+  extension: {
+    path: '../rapidor/packages/react-devtools-extensions/chrome/build/unpacked',
+    calls: [
+      // { fn: '__RAPIDOR__init', when: 'start' },
+      { fn: '__RAPIDOR__getData', when: 'end' },
+    ],
+  },
+} as const satisfies CrawlConfig);

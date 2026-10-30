@@ -1,7 +1,7 @@
 import type { Page } from 'playwright';
 import { log } from 'crawlee';
 import type {
-  IStabilityWaiter, IActionExecutor, IStateCapturer, IStateNavigator, IStateStore, IStateGraph,
+  IStabilityWaiter, IActionExecutor, IStateCapturer, IStateNavigator, IStateStore, IStateGraph, IExplorationHooks,
 } from './interfaces';
 import type { UIState, Action, ElementDescriptor } from './types';
 
@@ -23,15 +23,18 @@ export class DfsExplorer {
     private store: IStateStore,
     private graph: IStateGraph,
     private limits: ExplorationLimits,
+    private hooks?: IExplorationHooks,
   ) {}
 
   async explore(page: Page): Promise<void> {
     this.deadline = Date.now() + this.limits.maxDurationSecs * 1000;
     try {
+      await this.hooks?.onStart(page);
       const root = await this.capture(page, [], 0);
       await this.store.save(page, root);
       await this.visit(page, root);
     } finally {
+      await this.hooks?.onEnd(page);
       // anche se l'esplorazione si interrompe, il grafo raccolto fin qui viene salvato
       await this.graph.persist();
       log.info(`Esplorazione terminata: ${this.store.count()} stati, ${this.graph.edgeCount()} archi`);
