@@ -13,16 +13,16 @@ const HANDLER_MARGIN_SECS = 120;
  * (channel 'chromium'; la headless shell di default non le supporta).
  * Un browser per sito (maxOpenPagesPerBrowser: 1) con profilo temporaneo (userDataDir: '')
  * mantiene l'isolamento di cookie e storage che altrimenti danno le pagine incognito.
+ * Con cfg.userDataDir il profilo è invece persistente (un solo browser alla volta).
  */
-function extensionBrowserOptions(cfg: CrawlConfig & { extension: ExtensionConfig }) {
+function persistentBrowserOptions(cfg: CrawlConfig) {
   return {
     launchContext: {
       useIncognitoPages: false,
-      userDataDir: '',
+      userDataDir: cfg.userDataDir ?? '',
       launchOptions: {
         headless: cfg.headless,
-        channel: 'chromium',
-        args: extensionLaunchArgs(cfg.extension),
+        ...(cfg.extension ? { channel: 'chromium', args: extensionLaunchArgs(cfg.extension) } : {}),
         // in un contesto persistente le opzioni di pagina vanno date al lancio
         locale: cfg.locale,
         viewport: cfg.viewport,
@@ -33,11 +33,14 @@ function extensionBrowserOptions(cfg: CrawlConfig & { extension: ExtensionConfig
 }
 
 export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawler {
-  const ext = cfg.extension ? extensionBrowserOptions({ ...cfg, extension: cfg.extension }) : undefined;
+  const ext = cfg.extension || cfg.userDataDir ? persistentBrowserOptions(cfg) : undefined;
+  if (cfg.userDataDir && cfg.concurrency > 1) {
+    throw new Error('userDataDir richiede concurrency: 1 (un profilo non è condivisibile tra browser)');
+  }
   return new PlaywrightCrawler({
     // ogni sito ha la sua pagina e il suo explorer: i siti possono girare in parallelo
     maxConcurrency: cfg.concurrency,
-    requestHandlerTimeoutSecs: cfg.maxDurationSecs + HANDLER_MARGIN_SECS,
+    requestHandlerTimeoutSecs: cfg.debugNoCrawling ? 24 * 3600 : cfg.maxDurationSecs + HANDLER_MARGIN_SECS,
     // l'esplorazione vive in un'unica richiesta: un retry ripartirebbe da zero duplicando gli stati
     maxRequestRetries: 0,
     // un contesto isolato per pagina: cookie e tab separati tra un sito e l'altro
@@ -62,6 +65,11 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
     ],
     async requestHandler({ page, request, log }) {
       // dopo i redirect (google.com -> www.google.com) l'origine giusta è quella caricata
+      if (cfg.debugNoCrawling) {
+        log.info('debugNoCrawling: fai il login a mano e chiudi il browser per terminare');
+        await page.context().waitForEvent('close', { timeout: 0 });
+        return;
+      }
       const rootUrl = request.loadedUrl ?? request.url;
       log.info(`Esplorazione di ${rootUrl}`);
       // i risultati restano etichettati con il dominio richiesto, anche se reindirizza altrove

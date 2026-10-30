@@ -14,7 +14,10 @@ npx playwright install chromium
 START_URL=https://example.com npm start
 
 # same as above, with the browser window visible
-HEADLESS=false npm start              
+HEADLESS=false npm start
+
+# loggin in and save data into a new browser profile
+USER_DATA_DIR=$HOME/.crawler-profile DEBUG_NO_CRAWLING=true HEADLESS=false  npm start
 
 # explores the first N sites from the Tranco list
 npm run tranco -- --top 10 --depth 2         

@@ -38,6 +38,8 @@ export interface CrawlConfig {
   blocklist: string[];          // testi da non cliccare (es. logout)
   extension?: ExtensionConfig;  // estensione Chrome da caricare (opzionale)
   auth?: AuthConfig;            // credenziali inviate a ogni richiesta verso il sito esplorato (opzionale)
+  debugNoCrawling: boolean;     // apre il browser sull'URL e aspetta che lo chiuda l'utente, senza esplorare (login a mano)
+  userDataDir?: string;        // profilo persistente del browser (opzionale): cookie e storage sopravvivono tra le esecuzioni
 }
 
 /** "a=1; b=2" -> { a: '1', b: '2' } (formato dell'header Cookie copiato dai DevTools). */
@@ -86,6 +88,13 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // autenticazione, solo da variabili d'ambiente per non committare segreti:
   //   AUTH_BEARER=<token>  AUTH_COOKIES='sid=abc; lang=it'  AUTH_HEADERS='{"X-Api-Key":"k"}'
   auth,
+  // profilo persistente: USER_DATA_DIR=/percorso/profilo npm start. Non puntare al profilo
+  // di Chrome in uso (bloccato, e Chrome 136+ vieta l'automazione su quella cartella):
+  // usa una cartella dedicata, o una copia del profilo. Richiede concurrency: 1.
+  userDataDir: process.env.USER_DATA_DIR,
+  // DEBUG_NO_CRAWLING=true: nessuna esplorazione, il browser resta aperto finché non lo chiudi
+  // (per fare il login a mano nel profilo persistente; usare con HEADLESS=false)
+  debugNoCrawling: process.env.DEBUG_NO_CRAWLING === 'true',
   extension: {
     path: '../rapidor/packages/react-devtools-extensions/chrome/build/unpacked',
     calls: [
