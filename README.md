@@ -66,6 +66,8 @@ termination is guaranteed even on very rich UIs. An error on an element only cos
 * **Identity without IDs or classes.** Framework-generated IDs and classes change on every load. Therefore, elements and states are identified by geometry and text. The viewport is fixed and Crawlee's random fingerprinting is disabled.
 * **One Crawlee request per site.** All exploration for a site lives in a single request handler without retries: a retry would restart from scratch, duplicating states.
 * **Isolated contexts.** Each site has its own incognito page, so cookies and storage do not mix. Multiple sites can run in parallel using `concurrency`.
+* **Several tabs per site.** With `tabsPerSite > 1` each tab runs its own depth-first search over the shared state store and graph. `markExplored` is synchronous, so the first tab to reach a (state, element) pair claims it; a tab that runs out of work picks up unexplored elements from other tabs' states. Exploration is therefore not deterministic. Tabs need the persistent browser context (as with the extension).
+* **HTTP cache stays on.** Playwright's `page.route` disables Chromium's HTTP cache, so every restore would re-download all scripts and styles. External navigations are blocked through a CDP `Fetch` interception limited to documents instead, and the browser cache works as for a normal user. (Note: `auth` headers still use `context.route`, which disables the cache again.)
 * **Always in English.** The browser declares the `en-US` locale (both `navigator.language` and the `Accept-Language` header). Multilingual sites therefore respond in English, and saved texts remain comparable with the `blocklist`. Exceptions remain possible for sites that choose the language based on IP.
 
 ## Configuration
@@ -75,8 +77,10 @@ Everything is in [src/config.ts](https://www.google.com/search?q=src/config.ts).
 | Key | Default | Description |
 | --- | --- | --- |
 | `startUrl` | `$START_URL` or `[https://example.com](https://example.com)` | Site to explore with `npm start`. Protocol is required. |
-| `maxDepth` / `maxStates` / `maxDurationSecs` | `3` / `500` / `1800` | Exploration limits per site. |
+| `maxDepth` / `maxStates` / `maxDurationSecs` | `3` / `500` / `1800` | Exploration limits. `maxStates` applies to each tab, `maxDurationSecs` to the whole site. |
 | `concurrency` | `1` | Sites explored in parallel. |
+| `tabsPerSite` | `1` | Tabs exploring the same site together (same browser context: cookies and storage are shared). Work is split automatically and a state is never saved twice. |
+| `restoreDelayMs` | `150` | Minimum gap between two page reloads of the same site, across all its tabs. |
 | `viewport` | `1280×800` | Fixed: rectangles, and thus IDs, depend on it. |
 | `stability` | `500 / 10000 / 3000 ms` | Required silence, maximum wait ceiling, threshold beyond which an open request is ignored. |
 | `rectGridPx` | `4` | Rectangle rounding: absorbs small layout shifts. |

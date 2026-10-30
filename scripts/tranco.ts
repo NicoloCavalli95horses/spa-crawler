@@ -1,7 +1,7 @@
 /**
  * Esplora i primi N siti della lista Tranco (https://tranco-list.eu).
  *
- *   npm run tranco -- --top 10 --depth 2 --max-states 30 --max-duration 300 --concurrency 2
+ *   npm run tranco -- --top 10 --depth 2 --max-states 30 --max-duration 300 --concurrency 2 --tabs 3
  *   npm run tranco -- --list-id PYK6J      # lista fissa, per esecuzioni riproducibili
  */
 import { parseArgs } from 'node:util';
@@ -21,6 +21,7 @@ const { values: args } = parseArgs({
     'max-states': { type: 'string', default: '30' },
     'max-duration': { type: 'string', default: '300' },
     concurrency: { type: 'string', default: '2' },
+    tabs: { type: 'string', default: '1' },
   },
 });
 
@@ -54,6 +55,7 @@ const cfg: CrawlConfig = {
   maxStates: positiveInt('max-states', args['max-states']),
   maxDurationSecs: positiveInt('max-duration', args['max-duration']),
   concurrency: Math.max(1, positiveInt('concurrency', args.concurrency)),
+  tabsPerSite: Math.max(1, positiveInt('tabs', args.tabs)),
 };
 
 const { listId, domains } = await fetchTranco(top, args['list-id']);

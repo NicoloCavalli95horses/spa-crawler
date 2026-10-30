@@ -18,9 +18,11 @@ export interface AuthConfig {
 export interface CrawlConfig {
   startUrl: string;
   maxDepth: number;
-  maxStates: number;            // tetto agli stati salvati: garantisce la terminazione
+  maxStates: number;            // tetto agli stati salvati da ciascuna tab: garantisce la terminazione
   maxDurationSecs: number;      // budget di tempo per sito: poi l'esplorazione si chiude da sola
   concurrency: number;          // siti esplorati in parallelo
+  tabsPerSite: number;          // tab che esplorano insieme lo stesso sito (stesso contesto: cookie e storage condivisi)
+  restoreDelayMs: number;       // distanza minima tra due ricaricamenti dello stesso sito (tutte le tab insieme)
   viewport: { width: number; height: number };  // fisso: i rettangoli dipendono dalla viewport
   stability: { quietMs: number; timeoutMs: number; longRequestMs: number };
   rectGridPx: number;           // arrotondamento dei rettangoli nel fingerprint
@@ -66,6 +68,8 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
+  tabsPerSite: 1,
+  restoreDelayMs: 150,
   viewport: { width: 1280, height: 800 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
   rectGridPx: 4,

@@ -9,6 +9,7 @@ import { StabilityWaiter } from './browser/StabilityWaiter';
 import { ActionExecutor } from './browser/ActionExecutor';
 import { ExtensionCalls } from './browser/ExtensionCalls';
 import { StateNavigator } from './browser/StateNavigator';
+import { RequestThrottle } from './browser/RequestThrottle';
 import { StateFingerprinter } from './state/StateFingerprinter';
 import { StateCapturer } from './state/StateCapturer';
 import { StateStore } from './state/StateStore';
@@ -42,7 +43,7 @@ export function buildExplorer(
   const extractor = new ClickableExtractor(selectorBuilder, cfg.blocklist);
   const capturer = new StateCapturer(extractor, textExtractor, fingerprinter);
   const executor = new ActionExecutor(new URL(rootUrl).origin, cfg.actionTimeoutMs, cfg.rectGridPx);
-  const navigator = new StateNavigator(rootUrl, executor, waiter, capturer);
+  const navigator = new StateNavigator(rootUrl, executor, waiter, capturer, new RequestThrottle(cfg.restoreDelayMs));
 
   // 3. l'algoritmo riceve tutto già pronto
   return new DfsExplorer(

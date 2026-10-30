@@ -33,12 +33,13 @@ function persistentBrowserOptions(cfg: CrawlConfig) {
 }
 
 export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawler {
-  const ext = cfg.extension || cfg.userDataDir ? persistentBrowserOptions(cfg) : undefined;
+  // più tab per sito richiedono il contesto persistente: Crawlee vieta newPage() sui contesti incognito
+  const ext = cfg.extension || cfg.userDataDir || cfg.tabsPerSite > 1 ? persistentBrowserOptions(cfg) : undefined;
   if (cfg.userDataDir && cfg.concurrency > 1) {
     throw new Error('userDataDir richiede concurrency: 1 (un profilo non è condivisibile tra browser)');
   }
   return new PlaywrightCrawler({
-    // ogni sito ha la sua pagina e il suo explorer: i siti possono girare in parallelo
+    // ogni sito ha la sua pagina (più tab con tabsPerSite) e il suo explorer: i siti possono girare in parallelo
     maxConcurrency: cfg.concurrency,
     requestHandlerTimeoutSecs: cfg.debugNoCrawling ? 24 * 3600 : cfg.maxDurationSecs + HANDLER_MARGIN_SECS,
     // l'esplorazione vive in un'unica richiesta: un retry ripartirebbe da zero duplicando gli stati
@@ -73,7 +74,19 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       const rootUrl = request.loadedUrl ?? request.url;
       log.info(`Esplorazione di ${rootUrl}`);
       // i risultati restano etichettati con il dominio richiesto, anche se reindirizza altrove
-      await buildExplorer(rootUrl, cfg, new URL(request.url).hostname).explore(page);
+      // tab aggiuntive nello stesso contesto: cookie e storage condivisi con la prima
+      const extraPages = await Promise.all(
+        Array.from({ length: Math.max(0, cfg.tabsPerSite - 1) }, async () => {
+          const p = await page.context().newPage();
+          await p.setViewportSize(cfg.viewport);
+          return p;
+        }),
+      );
+      try {
+        await buildExplorer(rootUrl, cfg, new URL(request.url).hostname).explore(page, extraPages);
+      } finally {
+        await Promise.all(extraPages.map((p) => p.close().catch(() => {})));
+      }
     },
   });
 }

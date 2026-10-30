@@ -73,3 +73,37 @@ export class FakeApp {
 }
 
 export const noWait: IStabilityWaiter = { waitForStable: async () => {} };
+
+/**
+ * Più tab sulla stessa app simulata: ognuna ha il suo stato corrente, ogni azione cede il
+ * controllo (come un click vero), così le tab si alternano davvero.
+ */
+export class FakeTabs {
+  private apps: FakeApp[];
+  private pagesList: Page[];
+  private byPage = new Map<Page, FakeApp>();
+
+  constructor(transitions: Record<string, Record<string, string>>, count: number) {
+    this.apps = Array.from({ length: count }, () => new FakeApp(transitions));
+    this.pagesList = this.apps.map((a) => a.page());
+    this.pagesList.forEach((p, i) => this.byPage.set(p, this.apps[i]));
+  }
+
+  pages(): Page[] { return this.pagesList; }
+  get clicks(): string[] { return this.apps.flatMap((a) => a.clicks); }
+  get gotoCount(): number { return this.apps.reduce((n, a) => n + a.gotoCount, 0); }
+  clicksOf(i: number): string[] { return this.apps[i].clicks; }
+
+  capturer(): IStateCapturer {
+    return { capture: async (page: Page) => this.byPage.get(page)!.capturer().capture(page) };
+  }
+
+  executor(): IActionExecutor {
+    return {
+      execute: async (page: Page, action: Action) => {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        return this.byPage.get(page)!.executor().execute(page, action);
+      },
+    };
+  }
+}

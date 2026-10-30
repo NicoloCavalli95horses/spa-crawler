@@ -10,11 +10,13 @@ export class StateNavigator implements IStateNavigator {
     private executor: IActionExecutor,
     private waiter: IStabilityWaiter,
     private capturer: IStateCapturer,
+    private throttle?: { wait(): Promise<void> },   // distanzia i ricaricamenti dello stesso sito
   ) {}
 
   async restore(page: Page, target: UIState): Promise<boolean> {
     if ((await this.currentId(page)) === target.id) return true;  // già lì
 
+    await this.throttle?.wait();
     await page.goto(this.rootUrl);                // refresh
     await this.waiter.waitForStable(page);
     for (const a of target.path) {               // replay del percorso

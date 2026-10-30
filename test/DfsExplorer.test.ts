@@ -5,7 +5,7 @@ import { StateNavigator } from '../src/browser/StateNavigator';
 import { StateStore } from '../src/state/StateStore';
 import { StateGraph } from '../src/state/StateGraph';
 import type { IStateCapturer } from '../src/core/interfaces';
-import { FakeApp, MemoryOutput, noWait } from './helpers/fakes';
+import { FakeApp, FakeTabs, MemoryOutput, noWait } from './helpers/fakes';
 
 /** Motore reale (navigatore, store, grafo) su un'app simulata. */
 function run(app: FakeApp, limits: Partial<ExplorationLimits> = {}, capturer?: IStateCapturer) {
@@ -94,5 +94,65 @@ describe('DfsExplorer', () => {
     const r = run(app, {}, broken);
     await assert.rejects(r.explore(), /pagina rotta/);
     assert.ok(r.out.json.has('state-graph'));
+  });
+
+  describe('più tab', () => {
+    const GRAPH = {
+      S0: { a: 'S1', b: 'S2', c: 'S3' },
+      S1: { d: 'S4', e: 'S5' },
+      S2: { f: 'S5', g: 'S6' },
+      S3: { h: 'S6' },
+      S4: { back: 'S0' }, S5: {}, S6: { x: 'S7' }, S7: {},
+    };
+
+    function runTabs(tabs: FakeTabs, limits: Partial<ExplorationLimits> = {}) {
+      const out = new MemoryOutput();
+      const cap = tabs.capturer();
+      const executor = tabs.executor();
+      const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
+      const explorer = new DfsExplorer(noWait, executor, cap, navigator,
+        new StateStore({ screenshots: false }, out), new StateGraph(out),
+        { maxDepth: 10, maxStates: 1000, maxDurationSecs: 3600, ...limits });
+      const [first, ...rest] = tabs.pages();
+      return { out, explore: () => explorer.explore(first, rest) };
+    }
+
+    it('trovano gli stessi stati di una tab sola, senza salvarne due volte', async () => {
+      const tabs = new FakeTabs(GRAPH, 3);
+      const r = runTabs(tabs);
+      await r.explore();
+      const ids = r.out.states.map((s) => s.id).sort();
+      assert.deepEqual(ids, ['S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7']);
+    });
+
+    it('si dividono il lavoro', async () => {
+      const tabs = new FakeTabs(GRAPH, 3);
+      await runTabs(tabs).explore();
+      const clicks = tabs.clicks;
+      assert.ok(clicks.length > 0);
+      assert.ok([0, 1, 2].filter((i) => tabs.clicksOf(i).length > 0).length >= 2, 'il lavoro deve dividersi tra le tab');
+    });
+
+    it('maxStates vale per ciascuna tab', async () => {
+      const tabs = new FakeTabs(GRAPH, 2);
+      const r = runTabs(tabs, { maxStates: 2 });
+      await r.explore();
+      assert.ok(r.out.states.length <= 4, `salvati ${r.out.states.length}`);
+      assert.ok(r.out.states.length > 2, 'con due tab si va oltre il tetto di una sola');
+    });
+
+    it('rispettano la profondità massima', async () => {
+      const tabs = new FakeTabs(GRAPH, 3);
+      const r = runTabs(tabs, { maxDepth: 1 });
+      await r.explore();
+      assert.deepEqual(r.out.states.map((s) => s.id).sort(), ['S0', 'S1', 'S2', 'S3']);
+    });
+
+    it('terminano anche quando ci sono più tab che lavoro', async () => {
+      const tabs = new FakeTabs({ S0: { a: 'S1' }, S1: {} }, 5);
+      const r = runTabs(tabs);
+      await r.explore();
+      assert.deepEqual(r.out.states.map((s) => s.id).sort(), ['S0', 'S1']);
+    });
   });
 });

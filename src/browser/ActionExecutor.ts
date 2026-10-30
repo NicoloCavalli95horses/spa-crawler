@@ -47,20 +47,32 @@ export class ActionExecutor implements IActionExecutor {
       // link target=_blank e window.open: si chiudono solo le tab aperte da questa pagina
       page.on('popup', (p) => { p.close().catch(() => {}); });
 
-      // solo le richieste verso altre origini passano dall'handler
-      await page.route(
-        (url) => url.origin !== this.allowedOrigin,
-        (route) => {
-          const req = route.request();
-          if (req.isNavigationRequest() && req.frame() === page.mainFrame()) {
-            log.debug(`Navigazione esterna bloccata: ${req.url()}`);
-            // con un 204 il browser resta sulla pagina corrente; abort mostrerebbe la pagina d'errore
-            return route.fulfill({ status: 204 });
-          }
-          return route.fallback();
-        },
-      );
+      await this.blockExternalNavigation(page);
     }
+  }
+
+  /**
+   * Intercetta solo i documenti, via CDP. Con page.route Playwright spegne la cache HTTP e
+   * ogni ripristino riscaricherebbe tutte le risorse del sito: così restano in cache.
+   */
+  private async blockExternalNavigation(page: Page): Promise<void> {
+    const cdp = await page.context().newCDPSession(page);
+    // l'id del frame principale resta lo stesso tra le navigazioni; chiederlo con la richiesta in pausa blocca la pagina
+    const mainFrameId = (await cdp.send('Page.getFrameTree')).frameTree.frame.id;
+    cdp.on('Fetch.requestPaused', async (e) => {
+      try {
+        if (e.frameId === mainFrameId && new URL(e.request.url).origin !== this.allowedOrigin) {
+          log.debug(`Navigazione esterna bloccata: ${e.request.url}`);
+          // con un 204 il browser resta sulla pagina corrente; failRequest mostrerebbe la pagina d'errore
+          await cdp.send('Fetch.fulfillRequest', { requestId: e.requestId, responseCode: 204 });
+        } else {
+          await cdp.send('Fetch.continueRequest', { requestId: e.requestId });
+        }
+      } catch {
+        // pagina chiusa nel frattempo
+      }
+    });
+    await cdp.send('Fetch.enable', { patterns: [{ resourceType: 'Document' }] });
   }
 }
 
