@@ -31,6 +31,7 @@ export interface IStateGraph {
 /** Dove finiscono i risultati. In produzione Crawlee, nei test un sink in memoria. */
 export interface IOutputSink {
   saveState(record: StateRecord): Promise<void>;
-  saveFile(key: string, data: Buffer, contentType: string): Promise<void>;
+  /** Restituisce la chiave effettiva con cui il file è stato salvato. */
+  saveFile(key: string, data: Buffer, contentType: string): Promise<string>;
   saveJson(key: string, value: unknown): Promise<void>;
 }

@@ -16,7 +16,7 @@ function run(app: FakeApp, limits: Partial<ExplorationLimits> = {}, capturer?: I
   const store = new StateStore({ screenshots: false }, out);
   const graph = new StateGraph(out);
   const explorer = new DfsExplorer(noWait, executor, cap, navigator, store, graph,
-    { maxDepth: 10, maxStates: 1000, ...limits });
+    { maxDepth: 10, maxStates: 1000, maxDurationSecs: 3600, ...limits });
   const saved = () => out.states.map((s) => s.id).sort();
   return { explorer, out, graph, saved, explore: () => explorer.explore(app.page()) };
 }
@@ -72,6 +72,13 @@ describe('DfsExplorer', () => {
     const r = run(app, { maxStates: 2 });
     await r.explore();
     assert.equal(r.out.states.length, 2);
+  });
+
+  it('si ferma quando il budget di tempo è esaurito', async () => {
+    const app = new FakeApp({ S0: { a: 'S1', b: 'S2' }, S1: {}, S2: {} });
+    const r = run(app, { maxDurationSecs: 0 });
+    await r.explore();
+    assert.deepEqual(r.saved(), ['S0']);
   });
 
   it('un errore su un elemento non interrompe gli altri', async () => {

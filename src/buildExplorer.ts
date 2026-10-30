@@ -14,9 +14,16 @@ import { StateStore } from './state/StateStore';
 import { StateGraph } from './state/StateGraph';
 import { CrawleeOutput } from './state/output/CrawleeOutput';
 
-export function buildExplorer(rootUrl: string, cfg: CrawlConfig): DfsExplorer {
+/**
+ * @param rootUrl URL da cui parte (e a cui torna) l'esplorazione, già dopo i redirect
+ * @param site    etichetta del sito nei risultati; di default l'host di rootUrl
+ */
+export function buildExplorer(
+  rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname,
+): DfsExplorer {
   // 1. foglie: nessuna dipendenza da altri moduli
-  const output = new CrawleeOutput();
+  // un prefisso per sito tiene separati screenshot e grafi quando si esplorano più siti
+  const output = new CrawleeOutput(site);
   const selectorBuilder = new SelectorBuilder({
     gridPx: cfg.rectGridPx, includeText: cfg.text.inElementId,
   });
@@ -39,6 +46,6 @@ export function buildExplorer(rootUrl: string, cfg: CrawlConfig): DfsExplorer {
   // 3. l'algoritmo riceve tutto già pronto
   return new DfsExplorer(
     waiter, executor, capturer, navigator, store, graph,
-    { maxDepth: cfg.maxDepth, maxStates: cfg.maxStates },
+    { maxDepth: cfg.maxDepth, maxStates: cfg.maxStates, maxDurationSecs: cfg.maxDurationSecs },
   );
 }

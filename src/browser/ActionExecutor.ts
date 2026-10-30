@@ -1,4 +1,4 @@
-import type { BrowserContext, Page } from 'playwright';
+import type { Page } from 'playwright';
 import { log } from 'crawlee';
 import type { IActionExecutor } from '../core/interfaces';
 import type { Action } from '../core/types';
@@ -7,7 +7,6 @@ import { locateTarget } from './inPage/locateTarget';
 
 export class ActionExecutor implements IActionExecutor {
   private guardedPages = new WeakSet<Page>();
-  private guardedContexts = new WeakSet<BrowserContext>();
 
   constructor(
     private allowedOrigin: string,   // blocca la navigazione fuori dominio
@@ -37,13 +36,16 @@ export class ActionExecutor implements IActionExecutor {
     return true;
   }
 
-  /** Installate una volta per pagina e per contesto. */
+  /** Installate una volta per pagina. */
   private async installGuards(page: Page): Promise<void> {
     if (!this.guardedPages.has(page)) {
       this.guardedPages.add(page);
 
       // alert/confirm/prompt bloccano la pagina finché qualcuno non li chiude
       page.on('dialog', (d) => { d.dismiss().catch(() => {}); });
+
+      // link target=_blank e window.open: si chiudono solo le tab aperte da questa pagina
+      page.on('popup', (p) => { p.close().catch(() => {}); });
 
       // solo le richieste verso altre origini passano dall'handler
       await page.route(
@@ -58,15 +60,6 @@ export class ActionExecutor implements IActionExecutor {
           return route.fallback();
         },
       );
-    }
-
-    const context = page.context();
-    if (!this.guardedContexts.has(context)) {
-      this.guardedContexts.add(context);
-      // link target=_blank e window.open: la nuova tab si chiude subito
-      context.on('page', (p) => {
-        if (p !== page) p.close().catch(() => {});
-      });
     }
   }
 }

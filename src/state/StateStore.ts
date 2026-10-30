@@ -27,9 +27,7 @@ export class StateStore implements IStateStore {
     let screenshotKey: string | undefined;
     if (this.opts.screenshots) {
       try {
-        const key = `state-${state.id}`;
-        await this.output.saveFile(key, await page.screenshot(), 'image/png');
-        screenshotKey = key;
+        screenshotKey = await this.output.saveFile(`state-${state.id}`, await page.screenshot(), 'image/png');
       } catch (err) {
         log.warning(`Screenshot dello stato ${state.id} non riuscito: ${(err as Error).message}`);
       }

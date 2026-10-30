@@ -8,10 +8,12 @@ import type { UIState, Action, ElementDescriptor } from './types';
 export interface ExplorationLimits {
   maxDepth: number;
   maxStates: number;   // garantisce la terminazione anche su UI molto ricche
+  maxDurationSecs: number;  // budget di tempo: chiude prima del timeout di Crawlee
 }
 
 export class DfsExplorer {
   private limitLogged = false;
+  private deadline = Infinity;
 
   constructor(
     private waiter: IStabilityWaiter,
@@ -24,6 +26,7 @@ export class DfsExplorer {
   ) {}
 
   async explore(page: Page): Promise<void> {
+    this.deadline = Date.now() + this.limits.maxDurationSecs * 1000;
     try {
       const root = await this.capture(page, [], 0);
       await this.store.save(page, root);
@@ -75,12 +78,17 @@ export class DfsExplorer {
   }
 
   private limitReached(): boolean {
-    if (this.store.count() < this.limits.maxStates) return false;
-    if (!this.limitLogged) {
-      log.warning(`Raggiunto il limite di ${this.limits.maxStates} stati: esplorazione interrotta`);
+    let reason: string | null = null;
+    if (this.store.count() >= this.limits.maxStates) {
+      reason = `limite di ${this.limits.maxStates} stati`;
+    } else if (Date.now() >= this.deadline) {
+      reason = `budget di ${this.limits.maxDurationSecs}s`;
+    }
+    if (reason && !this.limitLogged) {
+      log.warning(`Raggiunto il ${reason}: esplorazione interrotta`);
       this.limitLogged = true;
     }
-    return true;
+    return reason !== null;
   }
 
   private async capture(page: Page, path: Action[], depth: number): Promise<UIState> {

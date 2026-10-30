@@ -6,7 +6,8 @@
   "scripts": {
     "start": "tsx src/main.ts",
     "typecheck": "tsc",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts",
+    "tranco": "tsx scripts/tranco.ts"
   },
   "keywords": [],
   "author": "",

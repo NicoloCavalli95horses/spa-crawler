@@ -1,15 +1,19 @@
 import type { Page } from 'playwright';
 
 /**
- * Wrapper of page.evaluate for functions written in TypeScript.
- * tsx/esbuild compile with keepNames and inject calls to __name(...) into functions:
- * in the browser that helper doesn't exist, so we define it as a no-op before evaluating.
+ * Wrapper di page.evaluate per funzioni scritte in TypeScript.
+ *
+ * tsx/esbuild compilano con keepNames e inseriscono nelle funzioni chiamate a __name(...),
+ * un helper che nel browser non esiste. Lo definiamo come costante locale attorno alla
+ * funzione: così non dipendiamo da un eventuale __name globale del sito, che può fare altro.
+ * L'argomento deve essere serializzabile in JSON.
  */
 export async function evaluateInPage<Arg, R>(
   page: Page,
   fn: (arg: Arg) => R | Promise<R>,
   arg: Arg,
 ): Promise<R> {
-  await page.evaluate('globalThis.__name ??= (f) => f');
-  return page.evaluate(fn as any, arg) as Promise<R>;
+  const source =
+    `(() => { const __name = (f) => f; return (${fn.toString()})(${JSON.stringify(arg ?? null)}); })()`;
+  return page.evaluate(source) as Promise<R>;
 }

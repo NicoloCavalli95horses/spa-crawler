@@ -21,7 +21,7 @@ export class MemoryOutput implements IOutputSink {
   json = new Map<string, unknown>();
 
   async saveState(record: StateRecord) { this.states.push(record); }
-  async saveFile(key: string, data: Buffer, contentType: string) { this.files.set(key, { data, contentType }); }
+  async saveFile(key: string, data: Buffer, contentType: string) { this.files.set(key, { data, contentType }); return key; }
   async saveJson(key: string, value: unknown) { this.json.set(key, value); }
 }
 

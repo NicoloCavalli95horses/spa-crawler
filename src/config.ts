@@ -2,7 +2,8 @@ export interface CrawlConfig {
   startUrl: string;
   maxDepth: number;
   maxStates: number;            // tetto agli stati salvati: garantisce la terminazione
-  handlerTimeoutSecs: number;   // tempo massimo dell'intera esplorazione di un URL
+  maxDurationSecs: number;      // budget di tempo per sito: poi l'esplorazione si chiude da sola
+  concurrency: number;          // siti esplorati in parallelo
   viewport: { width: number; height: number };  // fisso: i rettangoli dipendono dalla viewport
   stability: { quietMs: number; timeoutMs: number; longRequestMs: number };
   rectGridPx: number;           // arrotondamento dei rettangoli nel fingerprint
@@ -23,7 +24,8 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   startUrl: process.env.START_URL ?? 'https://example.com',
   maxDepth: 3,
   maxStates: 500,
-  handlerTimeoutSecs: 3600,
+  maxDurationSecs: 1800,
+  concurrency: 1,
   viewport: { width: 1280, height: 800 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
   rectGridPx: 4,
