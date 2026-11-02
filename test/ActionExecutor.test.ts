@@ -78,6 +78,18 @@ describe('ActionExecutor', () => {
     await page.waitForFunction(() => document.title === 'no', null, { timeout: 2000 });
   });
 
+  it('accepts beforeunload prompts, so that a page cannot block the next navigation', async () => {
+    const page = await browser.open({
+      '/': `<script>addEventListener('beforeunload', (e) => { e.preventDefault(); e.returnValue = ''; })</script>
+        <button>Lesson</button>`,
+      '/due': '<p>due</p>',
+    });
+    // the click gives the page the user activation that Chrome requires to show the prompt
+    assert.equal(await executor().execute(page, click(await target(page, 'Lesson'))), true);
+    await page.goto(`${APP_ORIGIN}/due`);
+    assert.equal(await page.textContent('p'), 'due');
+  });
+
   it('blocks navigation to other domains, staying on the page', async () => {
     const page = await browser.open({ '/': '<a href="https://other.test/">Esterno</a><p>casa</p>' });
     assert.equal(await executor().execute(page, click(await target(page, 'Esterno'))), true);

@@ -41,8 +41,9 @@ export class ActionExecutor implements IActionExecutor {
     if (!this.guardedPages.has(page)) {
       this.guardedPages.add(page);
 
-      // alert/confirm/prompt block the page until someone dismisses them
-      page.on('dialog', (d) => { d.dismiss().catch(() => {}); });
+      // alert/confirm/prompt block the page until someone dismisses them. beforeunload is accepted instead:
+      // dismissing it cancels the navigation, so every restore of that tab would fail with ERR_ABORTED and the tab would stay stuck on the page
+      page.on('dialog', (d) => { (d.type() === 'beforeunload' ? d.accept() : d.dismiss()).catch(() => {}); });
 
       // target=_blank links and window.open: only tabs opened by this page are closed
       page.on('popup', (p) => { p.close().catch(() => {}); });
