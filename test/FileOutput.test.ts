@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileOutput, folderTimestamp } from '../src/state/output/FileOutput';
-import { aggregate, collect, parseFolder } from '../src/stats/aggregate';
+import { aggregate, collect, extensionStats, parseFolder } from '../src/stats/aggregate';
 import type { StateRecord } from '../src/core/types';
 
 const record = (id: string): StateRecord => ({ id, url: `https://a.test/${id}`, depth: 0, path: [], clickables: [], texts: ['è'] });
@@ -51,15 +51,49 @@ describe('aggregate', () => {
     assert.equal(parseFolder('_stats.json'), undefined);
   });
 
-  it('averages: states and edges over all sites, IDOR only over those with the extension', () => {
+  it('extensionStats merges the tabs: sums counters, max of maxima, distinct reports and keys', () => {
+    const e = extensionStats({ data: [
+      { tabId: 1, logs: [], stats: { 'States saved': 3, 'HTTP events tracked (in scope)': 10, 'Max components seen in a snapshot': 40,
+        'Vulnerability report': [{ id: 'v1' }, { id: 'v2' }], 'Sensitive (authZ-relevant) keys detected': ['isPremium'] } },
+      { tabId: 2, logs: [], stats: { 'States saved': 2, 'HTTP events tracked (in scope)': 5, 'Max components seen in a snapshot': 70,
+        'Vulnerability report': [{ id: 'v2' }], 'Sensitive (authZ-relevant) keys detected': ['isPremium', 'role'] } },
+      { tabId: 3, logs: [], stats: { 'States saved': 0, 'Vulnerability report': 0, 'Sensitive (authZ-relevant) keys detected': 0 } },
+    ] })!;
+    assert.equal(e.tabs, 3);
+    assert.equal(e.reactStatesSaved, 5);
+    assert.equal(e.httpEventsTracked, 15);
+    assert.equal(e.maxComponents, 70);
+    assert.equal(e.vulnerabilities, 2);   // v2 reported by two tabs counts once
+    assert.deepEqual(e.vulnerabilityIds, ['v1', 'v2']);
+    assert.deepEqual(e.sensitiveKeyNames, ['isPremium', 'role']);
+    assert.equal(e.sensitiveKeys, 2);
+  });
+
+  it('extensionStats accepts a single { logs, stats } object and returns null without data', () => {
+    assert.equal(extensionStats({ data: { logs: [], stats: { 'Vulnerability report': [{ id: 'x' }] } } })?.vulnerabilities, 1);
+    assert.equal(extensionStats({ data: null }), null);
+    assert.equal(extensionStats({ data: [] }), null);
+  });
+
+  it('states and edges over all sites, extension metrics only over those with the extension', () => {
     const base = { folder: '', startedAt: '' };
+    const ext = (vulnerabilities: number, reactStatesSaved: number) =>
+      ({ ...extensionStats({ data: { stats: {} } })!, vulnerabilities, reactStatesSaved });
     const agg = aggregate([
-      { ...base, site: 'a', states: 10, edges: 20, potentialIdor: 2 },
-      { ...base, site: 'b', states: 20, edges: 40, potentialIdor: null },   // still running
+      { ...base, site: 'a', states: 10, edges: 20, extension: ext(2, 6) },
+      { ...base, site: 'b', states: 20, edges: 40, extension: ext(0, 2) },
+      { ...base, site: 'c', states: 30, edges: 60, extension: null },   // still running
     ]);
-    assert.deepEqual(agg.averages, { states: 15, edges: 30, potentialIdor: 2 });
-    assert.equal(agg.sitesWithExtension, 1);
-    assert.deepEqual(aggregate([]).averages, { states: null, edges: null, potentialIdor: null });
+    assert.equal(agg.averages.states, 20);
+    assert.equal(agg.averages.vulnerabilities, 1);
+    assert.equal(agg.averages.reactStatesSaved, 4);
+    assert.equal(agg.totals.vulnerabilities, 2);
+    assert.equal(agg.totals.edges, 120);
+    assert.equal(agg.sitesWithExtension, 2);
+    assert.equal(agg.sitesWithVulnerabilities, 1);
+    const empty = aggregate([]);
+    assert.equal(empty.averages.vulnerabilities, null);
+    assert.equal(empty.totals.vulnerabilities, 0);
   });
 
   it('collect reads both running and completed folders', async () => {
@@ -68,16 +102,20 @@ describe('aggregate', () => {
     await done.saveState(record('s0'));
     await done.saveState(record('s1'));
     await done.saveJson('state-graph', { edges: [{}, {}, {}] });
-    await done.saveJson('extension-end-__RAPIDOR__getData', { logs: [], stats: { 'Potential IDOR reported': 4 } });
+    await done.saveJson('extension-end-__RAPIDOR__getData', [
+      { tabId: 1, logs: [], stats: { 'Vulnerability report': [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] } },
+    ]);
     const running = new FileOutput('run.test', dir, new Date('2026-10-30T10:00:01Z'));
     await running.saveState(record('s0'));
     await mkdir(join(dir, 'altro'));   // unrelated folders are ignored
     await writeFile(join(dir, '_stats.json'), '{}');
 
     const agg = await collect(dir);
-    assert.deepEqual(agg.perSite.map((s) => [s.site, s.states, s.edges, s.potentialIdor]), [
+    assert.deepEqual(agg.perSite.map((s) => [s.site, s.states, s.edges, s.extension?.vulnerabilities ?? null]), [
       ['done.test', 2, 3, 4], ['run.test', 1, 0, null],
     ]);
-    assert.deepEqual(agg.averages, { states: 1.5, edges: 1.5, potentialIdor: 4 });
+    assert.equal(agg.averages.states, 1.5);
+    assert.equal(agg.averages.edges, 1.5);
+    assert.equal(agg.averages.vulnerabilities, 4);
   });
 });

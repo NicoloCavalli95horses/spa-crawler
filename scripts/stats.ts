@@ -10,7 +10,7 @@
 import { rename, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { collect, type Aggregate } from '../src/stats/aggregate';
+import { collect, EXTENSION_FIELDS, type Aggregate } from '../src/stats/aggregate';
 import { SITES_DIR } from '../src/state/output/FileOutput';
 
 const { values: args } = parseArgs({
@@ -28,14 +28,21 @@ const fmt = (n: number | null) => (n === null ? '-' : String(n));
 
 function print(agg: Aggregate): void {
   console.clear();
-  console.log(`[${agg.updatedAt}] ${agg.sites} analyses, ${agg.sitesWithExtension} with extension results`);
-  console.table(agg.perSite.map((s) => ({
-    site: s.site, started: s.startedAt, states: s.states, edges: s.edges, 'potential IDOR': fmt(s.potentialIdor),
-  })));
   console.log(
-    `Averages -> states: ${fmt(agg.averages.states)}, edges: ${fmt(agg.averages.edges)}, ` +
-    `potential IDOR: ${fmt(agg.averages.potentialIdor)}`,
+    `[${agg.updatedAt}] ${agg.sites} analyses, ${agg.sitesWithExtension} with extension results, ` +
+    `${agg.sitesWithVulnerabilities} with potential vulnerabilities`,
   );
+  console.table(agg.perSite.map((s) => ({
+    site: s.site, started: s.startedAt, states: s.states, edges: s.edges,
+    vulnerabilities: s.extension?.vulnerabilities ?? '-',
+    'react states': s.extension?.reactStatesSaved ?? '-',
+    'http events': s.extension?.httpEventsTracked ?? '-',
+    'requests generated': s.extension?.requestsGenerated ?? '-',
+  })));
+  // states and edges over all sites, extension metrics only over the sites with extension results
+  console.table(Object.fromEntries((['states', 'edges', ...EXTENSION_FIELDS] as const).map((k) => [
+    k, { total: agg.totals[k], average: fmt(agg.averages[k]) },
+  ])));
 }
 
 async function tick(): Promise<void> {

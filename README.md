@@ -110,13 +110,17 @@ The crawler can load an unpacked Chrome extension and call functions it exposes 
 extension: {
   path: './extensions/rapidor',   // folder containing manifest.json
   calls: [
-    { fn: '__RAPIDOR__init', when: 'start' },
-    { fn: '__RAPIDOR__getData', when: 'end', args: [] },  // args optional
-  ],
+      // clears the extension's shared IndexedDB once, so a run on a persistent profile starts clean
+      { fn: '__RAPIDOR__reset', when: 'start' },
+      // before acting on a page, wait until the extension has captured at least one state for it
+      // (otherwise a fast reload would navigate away before React state is recorded)
+      { fn: '__RAPIDOR__waitToAction', when: 'before-action', args: [{ timeoutMs: 3000 }] },
+      { fn: '__RAPIDOR__getData', when: 'end' },
+    ],
 },
 ```
 
-* `start`: before the first state is captured. `end`: after the last state (also when the exploration stops on an error), on the page as it was left by the last click.
+* `start`: before the first state is captured. `before-action`: called before the crawler interacts with the clickable elements. `end`: after the last state (also when the exploration stops on an error), on the page as it was left by the last click.
 * Return values (JSON-serializable, promises are awaited) are saved in `storage/key_value_stores/default/<site>--extension-<when>-<fn>.json`.
 * The functions must live in the page's `MAIN` world: declare the content script with `"world": "MAIN"` in `manifest.json`, otherwise `window` does not see them.
 * A missing function (waits up to `actionTimeoutMs`) or a failing call logs a warning and never stops the crawl.
@@ -141,7 +145,12 @@ npm run stats -- --once          # single pass
 npm run stats -- --interval 10 --dir storage/sites
 ```
 
-Reads every folder in `storage/sites/` and writes `storage/sites/_stats.json` with a per-site row and the averages of: total states, total edges (all sites, including those still running) and `Potential IDOR reported` from the extension (only sites whose extension result is already there).
+Reads every folder in `storage/sites/` and writes `storage/sites/_stats.json` with a per-site row, plus totals and averages:
+
+* crawler metrics (states, edges) over all sites, including those still running;
+* RAPIDOR metrics only over the sites whose extension result is already there. `__RAPIDOR__getData` returns one entry per tab, and the tabs are merged per site. Counters (React states saved, HTTP events tracked/analyzed, requests generated, response evaluations, prop differences, ...) are summed, and `Max components seen` takes the highest value.
+* **potential vulnerabilities**: distinct `id`s in `Vulnerability report` (a report seen by two tabs counts once), plus `sitesWithVulnerabilities`. Each site row lists the ids; the full reports, for manual inspection, stay in the site's `extension-end-__RAPIDOR__getData.json`.
+* sensitive (authZ-relevant) keys: distinct key names per site.
 
 ## Tranco List
 

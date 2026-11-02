@@ -9,7 +9,7 @@ import { parseArgs } from 'node:util';
 import { KeyValueStore, log } from 'crawlee';
 import { runCrawler } from '../src/main';
 import { config, type CrawlConfig } from '../src/config';
-import { collect } from '../src/stats/aggregate';
+import { collect, type SiteStats } from '../src/stats/aggregate';
 import { SITES_DIR } from '../src/state/output/FileOutput';
 
 const TRANCO = 'https://tranco-list.eu';
@@ -80,19 +80,24 @@ const stats = await runCrawler(entries.map((e, i) => ({
 
 // per-site summary, also saved next to the results
 // folders sorted by name: for each site the last analysis is the one from this run
-const statesBySite = new Map<string, number>();
-for (const s of (await collect(SITES_DIR)).perSite) statesBySite.set(s.site, s.states);
+const bySite = new Map<string, SiteStats>();
+for (const s of (await collect(SITES_DIR)).perSite) bySite.set(s.site, s);
 
 const summary = {
   listId,
   start,
   domains,
   limits: { maxDepth: cfg.maxDepth, maxStates: cfg.maxStates, maxDurationSecs: cfg.maxDurationSecs },
-  statesBySite: Object.fromEntries(statesBySite),
+  statesBySite: Object.fromEntries(domains.map((d) => [d, bySite.get(d)?.states ?? 0])),
+  vulnerabilitiesBySite: Object.fromEntries(domains.map((d) => [d, bySite.get(d)?.extension?.vulnerabilities ?? null])),
   requestsFinished: stats.requestsFinished,
   requestsFailed: stats.requestsFailed,
 };
 await KeyValueStore.setValue('tranco-summary', summary);
 
-console.table(entries.map((e) => ({ rank: e.rank, domain: e.domain, states: statesBySite.get(e.domain) ?? 0 })));
+console.table(entries.map((e) => ({
+  rank: e.rank, domain: e.domain,
+  states: bySite.get(e.domain)?.states ?? 0,
+  vulnerabilities: bySite.get(e.domain)?.extension?.vulnerabilities ?? '-',
+})));
 console.log(`Finished: ${stats.requestsFinished}, failed: ${stats.requestsFailed}`);
