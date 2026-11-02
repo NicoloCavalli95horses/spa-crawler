@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url';
-import { PlaywrightCrawler, type FinalStatistics, type RequestOptions } from 'crawlee';
+import { PlaywrightCrawler, Configuration, type FinalStatistics, type RequestOptions } from 'crawlee';
 import { config as defaultConfig, type CrawlConfig, type ExtensionConfig } from './config';
 import { buildExplorer } from './buildExplorer';
 import { extensionLaunchArgs } from './browser/ExtensionCalls';
@@ -7,6 +7,14 @@ import { applyAuth } from './browser/Auth';
 
 /** Margin beyond the exploration budget: final capture and graph saving. */
 const HANDLER_MARGIN_SECS = 120;
+
+// Crawlee only treats availableMemoryRatio of system RAM as its budget (default 0.25) and warns
+// when ~90% of it is used. One site with several tabs and the browser extension easily exceeds a
+// quarter of RAM, so we raise the default; CRAWLEE_AVAILABLE_MEMORY_RATIO still overrides it.
+const DEFAULT_MEMORY_RATIO = 0.6;
+if (!process.env.CRAWLEE_AVAILABLE_MEMORY_RATIO) {
+  Configuration.getGlobalConfig().set('availableMemoryRatio', DEFAULT_MEMORY_RATIO);
+}
 
 /**
  * Chrome loads extensions only in a persistent context, with the new headless mode
