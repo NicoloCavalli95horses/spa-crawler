@@ -60,6 +60,37 @@ describe('ClickableExtractor', () => {
     assert.deepEqual(found, ['Interno']);
   });
 
+  it('keeps the innermost of near-overlapping nested clickables (container a few px larger)', async () => {
+    const found = await texts(
+      '<div style="cursor:pointer;padding:1px;display:inline-block"><button style="width:200px;height:40px">Dentro</button></div>');
+    assert.deepEqual(found, ['Dentro']);
+  });
+
+  it('drops a non-semantic clickable whose box is an extreme size outlier vs the rest', async () => {
+    // six small buttons + one huge cursor:pointer div (>8x the median area) => the div is a false positive
+    const found = await texts(`
+      <button style="width:40px;height:40px">b1</button>
+      <button style="width:40px;height:40px">b2</button>
+      <button style="width:40px;height:40px">b3</button>
+      <button style="width:40px;height:40px">b4</button>
+      <button style="width:40px;height:40px">b5</button>
+      <button style="width:40px;height:40px">b6</button>
+      <div style="cursor:pointer;width:600px;height:400px">Huge wrapper</div>`);
+    assert.ok(!found.includes('Huge wrapper'), `huge non-semantic div should be dropped: ${found}`);
+    assert.ok(found.includes('b1') && found.includes('b6'), `real buttons kept: ${found}`);
+  });
+
+  it('keeps a large SEMANTIC clickable even when it is a size outlier', async () => {
+    const found = await texts(`
+      <button style="width:40px;height:40px">b1</button>
+      <button style="width:40px;height:40px">b2</button>
+      <button style="width:40px;height:40px">b3</button>
+      <button style="width:40px;height:40px">b4</button>
+      <button style="width:40px;height:40px">b5</button>
+      <a href="/hero" style="display:block;width:600px;height:400px">Hero link</a>`);
+    assert.ok(found.includes('Hero link'), `semantic outlier must be kept: ${found}`);
+  });
+
   it('applies the blocklist to text, aria-label and href', async () => {
     const found = await texts(`
       <button>Salva</button><button>Logout</button>

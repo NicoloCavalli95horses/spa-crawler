@@ -72,14 +72,37 @@ export function collectCandidates(opts: CollectOptions): RawElement[] {
     if (r) usable.set(el, r);
   }
 
-  // 3. Dedupe: a clickable container as large as its clickable child is the same target
-  const sameRect = (a: DOMRect, b: DOMRect) =>
-    Math.abs(a.x - b.x) < 2 && Math.abs(a.y - b.y) < 2 &&
-    Math.abs(a.width - b.width) < 2 && Math.abs(a.height - b.height) < 2;
+  // 3. Dedupe: keep the innermost of nested clickables that occupy nearly the same box. A clickable
+  // container whose clickable child nearly fills it is the same target, so we drop the container.
+  // "Nearly fills" = the child is inside the parent (small margin) and covers >= 90% of its area;
+  // this also catches wrappers only a few px larger than the child, not just pixel-identical ones.
+  const nearlyFills = (parent: DOMRect, child: DOMRect): boolean => {
+    const inside = child.left >= parent.left - 2 && child.top >= parent.top - 2 &&
+      child.right <= parent.right + 2 && child.bottom <= parent.bottom + 2;
+    const parentArea = parent.width * parent.height;
+    return inside && parentArea > 0 && (child.width * child.height) / parentArea >= 0.9;
+  };
   for (const [el, r] of usable) {
     for (let p = el.parentElement; p; p = p.parentElement) {
       const pr = usable.get(p);
-      if (pr && sameRect(pr, r)) usable.delete(p);
+      if (pr && nearlyFills(pr, r)) usable.delete(p);
+    }
+  }
+
+  // 3b. Drop non-semantic candidates whose box is an extreme size outlier vs the rest: a
+  // cursor:pointer wrapper or overlay far larger than the real controls is almost always a false
+  // positive, and each false positive costs a full explore cycle. Semantic elements (<a>, <button>,
+  // [role], ...) are trusted at any size, and we only judge "outlier" when there are enough samples.
+  const OUTLIER_AREA_RATIO = 8;   // times the median clickable area
+  const MIN_SAMPLES = 6;
+  if (usable.size >= MIN_SAMPLES) {
+    const areas = [...usable.values()].map((r) => r.width * r.height).sort((a, b) => a - b);
+    const median = areas[Math.floor(areas.length / 2)];
+    if (median > 0) {
+      for (const [el, r] of [...usable]) {
+        if (el.matches(SEMANTIC)) continue;
+        if (r.width * r.height >= OUTLIER_AREA_RATIO * median) usable.delete(el);
+      }
     }
   }
 
