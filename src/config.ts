@@ -1,6 +1,8 @@
 export interface ExtensionCall {
-  fn: string;                    // name on window, e.g. '__RAPIDOR__getData'
-  when: 'start' | 'end';         // start: before the exploration; end: after the last state
+  fn: string;                              // name on window, e.g. '__RAPIDOR__getData'
+  // start: before the exploration; end: after the last state; before-action: before each action on
+  // a page (its boolean result is treated as "ready"/"not ready", it never blocks the crawl)
+  when: 'start' | 'end' | 'before-action';
   args?: unknown[];              // arguments, JSON-serializable
 }
 
@@ -63,12 +65,12 @@ const auth: AuthConfig | undefined =
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
   // the protocol is required, otherwise Crawlee discards the URL
-  startUrl: process.env.START_URL ?? 'https://learn.pimsleur.com/MiniLearn',
-  maxDepth: 1,
+  startUrl: process.env.START_URL ?? 'https://www.busuu.com/dashboard/timeline/a1',
+  maxDepth: 2,
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
-  tabsPerSite: 3,
+  tabsPerSite: 5,
   restoreDelayMs: 150,
   viewport: { width: 1280, height: 800 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
@@ -102,7 +104,11 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   extension: {
     path: '../rapidor/packages/react-devtools-extensions/chrome/build/unpacked',
     calls: [
-      // { fn: '__RAPIDOR__init', when: 'start' },
+      // clears the extension's shared IndexedDB once, so a run on a persistent profile starts clean
+      { fn: '__RAPIDOR__reset', when: 'start' },
+      // before acting on a page, wait until the extension has captured at least one state for it
+      // (otherwise a fast reload would navigate away before React state is recorded)
+      { fn: '__RAPIDOR__waitToAction', when: 'before-action', args: [{ timeoutMs: 3000 }] },
       { fn: '__RAPIDOR__getData', when: 'end' },
     ],
   },

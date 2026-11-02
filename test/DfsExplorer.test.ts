@@ -96,6 +96,30 @@ describe('DfsExplorer', () => {
     assert.ok(r.out.json.has('state-graph'));
   });
 
+  it('calls hooks.beforeAction once we are on a state, before each click on it', async () => {
+    const app = new FakeApp({ S0: { a: 'S1', b: 'S2' }, S1: {}, S2: {} });
+    const out = new MemoryOutput();
+    const cap = app.capturer();
+    const executor = app.executor();
+    const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
+    let beforeActions = 0;
+    const hooks = {
+      onStart: async () => {},
+      onEnd: async () => {},
+      beforeAction: async () => { beforeActions++; },
+    };
+    const explorer = new DfsExplorer(
+      noWait, executor, cap, navigator, new StateStore({ screenshots: false }, out), new StateGraph(out),
+      { maxDepth: 10, maxStates: 1000, maxDurationSecs: 3600 }, hooks,
+    );
+
+    await explorer.explore(app.page());
+
+    // one beforeAction per click attempt: S0 has two clickables; S1 and S2 have none
+    assert.equal(beforeActions, 2);
+    assert.deepEqual(out.states.map((s) => s.id).sort(), ['S0', 'S1', 'S2']);
+  });
+
   describe('multiple tabs', () => {
     const GRAPH = {
       S0: { a: 'S1', b: 'S2', c: 'S3' },

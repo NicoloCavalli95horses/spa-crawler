@@ -21,6 +21,9 @@ export function extensionLaunchArgs(extension: ExtensionConfig): string[] {
  * An extension error never interrupts the exploration.
  */
 export class ExtensionCalls implements IExplorationHooks {
+  // how often the before-action handshake found the page ready vs not (saved with the results)
+  private beforeActionStats = { total: 0, ready: 0, notReady: 0, unavailable: 0 };
+
   constructor(
     private extension: ExtensionConfig,
     private output: IOutputSink,
@@ -28,7 +31,45 @@ export class ExtensionCalls implements IExplorationHooks {
   ) {}
 
   onStart(page: Page): Promise<void> { return this.run(page, 'start'); }
-  onEnd(page: Page): Promise<void> { return this.run(page, 'end'); }
+
+  async onEnd(page: Page): Promise<void> {
+    await this.run(page, 'end');
+    if (this.beforeActionStats.total > 0) {
+      await this.output.saveJson('before-action-stats', this.beforeActionStats);
+      const { ready, notReady, unavailable, total } = this.beforeActionStats;
+      log.info(`wait-to-action: ${ready}/${total} ready, ${notReady} not ready, ${unavailable} unavailable`);
+    }
+  }
+
+  /**
+   * Runs the `before-action` calls on `page` and interprets each boolean result (false = the page
+   * is not ready yet). Never throws and never blocks: a missing function, a timeout or an error just
+   * counts as "unavailable" and the crawler proceeds. Shared by every tab.
+   */
+  async beforeAction(page: Page): Promise<void> {
+    const calls = this.extension.calls.filter((c) => c.when === 'before-action');
+    // the function is injected at document_start, so it is almost always already there
+    const probeMs = Math.min(this.timeoutMs, 1_000);
+    for (const call of calls) {
+      this.beforeActionStats.total++;
+      try {
+        await page.waitForFunction(
+          (name) => typeof (window as unknown as Record<string, unknown>)[name] === 'function',
+          call.fn, { timeout: probeMs },
+        );
+        const ready = await evaluateInPage(
+          page,
+          ({ fn, args }) => (window as unknown as Record<string, (...a: unknown[]) => unknown>)[fn](...args),
+          { fn: call.fn, args: call.args ?? [] },
+        );
+        if (ready === false) this.beforeActionStats.notReady++;
+        else this.beforeActionStats.ready++;
+      } catch {
+        // page without the extension injected, closed, or navigating: not worth blocking on
+        this.beforeActionStats.unavailable++;
+      }
+    }
+  }
 
   private async run(page: Page, when: 'start' | 'end'): Promise<void> {
     for (const call of this.extension.calls.filter((c) => c.when === when)) {

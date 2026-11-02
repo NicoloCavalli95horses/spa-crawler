@@ -42,4 +42,7 @@ export interface IExplorationHooks {
   onStart(page: Page): Promise<void>;
   /** After the last state, even if the exploration was interrupted by an error. */
   onEnd(page: Page): Promise<void>;
+  /** Before each action on `page` (every tab). Must never throw. Used to let the extension record
+   * the current page's state before the crawler navigates away. */
+  beforeAction?(page: Page): Promise<void>;
 }

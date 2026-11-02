@@ -124,6 +124,9 @@ export class DfsExplorer {
       return null;
     }
 
+    // we are now on `state`: let hooks (e.g. the extension) record it before we click away from it
+    await this.hooks?.beforeAction?.(page);
+
     const action: Action = { type: 'click', target: el };
     if (!(await this.executor.execute(page, action))) return null;
 
