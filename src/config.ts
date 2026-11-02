@@ -41,6 +41,7 @@ export interface CrawlConfig {
   headless: boolean;            // false: opens a browser window to watch the crawler in action
   locale: string;               // language requested from sites: keeps texts and blocklist consistent
   blocklist: string[];          // texts not to click (e.g. logout)
+  dismissOverlays: boolean;     // close blocking modals (Escape / close control) before capturing, so an interstitial does not cost a depth level
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
   auth?: AuthConfig;            // credentials sent with every request to the explored site (optional)
   debugNoCrawling: boolean;     // opens the browser on the URL and waits for the user to close it, without exploring (manual login)
@@ -89,6 +90,8 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   locale: 'en-US',
   // case-insensitive substring match on text, aria-label and href
   blocklist: ['logout', 'log out', 'sign out', 'quit', 'delete'],
+  // close blocking modals (Escape, then an explicit close control) before capturing a state
+  dismissOverlays: true,
   // Chrome extension: call results end up in the KeyValueStore as
   // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world
   // (content script with "world": "MAIN" in the manifest), otherwise window cannot see them.

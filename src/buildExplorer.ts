@@ -9,6 +9,7 @@ import { StabilityWaiter } from './browser/StabilityWaiter';
 import { ActionExecutor } from './browser/ActionExecutor';
 import { ExtensionCalls } from './browser/ExtensionCalls';
 import { StateNavigator } from './browser/StateNavigator';
+import { OverlayDismisser } from './browser/OverlayDismisser';
 import { RequestThrottle } from './browser/RequestThrottle';
 import { StateFingerprinter } from './state/StateFingerprinter';
 import { StateCapturer } from './state/StateCapturer';
@@ -41,7 +42,9 @@ export function buildExplorer(
 
   // 2. modules that depend on the leaves
   const extractor = new ClickableExtractor(selectorBuilder, cfg.blocklist);
-  const capturer = new StateCapturer(extractor, textExtractor, fingerprinter);
+  const capturer = new StateCapturer(
+    extractor, textExtractor, fingerprinter, cfg.dismissOverlays ? new OverlayDismisser() : undefined,
+  );
   const executor = new ActionExecutor(new URL(rootUrl).origin, cfg.actionTimeoutMs, cfg.rectGridPx);
   const navigator = new StateNavigator(rootUrl, executor, waiter, capturer, new RequestThrottle(cfg.restoreDelayMs));
 

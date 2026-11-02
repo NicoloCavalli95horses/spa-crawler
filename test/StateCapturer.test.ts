@@ -22,4 +22,20 @@ describe('StateCapturer', () => {
     assert.deepEqual(snap, { id: 'ID', url: 'https://app.test/x', clickables, texts });
     assert.deepEqual(received, { url: 'https://app.test/x', clickables, texts });
   });
+
+  it('dismisses overlays before extracting, so the observed state is behind any modal', async () => {
+    const order: string[] = [];
+    const capturer = new StateCapturer(
+      { extract: async () => { order.push('extract-clickables'); return []; } },
+      { extract: async () => { order.push('extract-texts'); return []; } },
+      { fingerprint: () => 'ID' },
+      { dismiss: async () => { order.push('dismiss'); return true; } },
+    );
+    const page = { url: () => 'https://app.test/x' } as unknown as Page;
+
+    await capturer.capture(page);
+
+    assert.equal(order[0], 'dismiss', `dismiss must run first, got ${order}`);
+    assert.deepEqual(order, ['dismiss', 'extract-clickables', 'extract-texts']);
+  });
 });
