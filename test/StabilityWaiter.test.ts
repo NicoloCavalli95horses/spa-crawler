@@ -36,6 +36,26 @@ describe('StabilityWaiter', () => {
     assert.equal(await page.textContent('#c'), 'arrivato');
   });
 
+  it('waits for query-param / URL changes to settle (history.pushState without a DOM mutation)', async () => {
+    const page = await browser.open({ '/': '<p>app</p>' });
+    // change the query param a few times via pushState, without touching the DOM; the last change
+    // lands ~300ms in, so the waiter must not return before the URL has been quiet for quietMs
+    await page.evaluate(() => {
+      let n = 0;
+      const t = setInterval(() => {
+        n++;
+        history.pushState({}, '', `/?step=${n}`);
+        if (n === 3) clearInterval(t);
+      }, 100);
+    });
+    const start = Date.now();
+    await new StabilityWaiter({ quietMs: 300, timeoutMs: 5000 }).waitForStable(page);
+    const ms = Date.now() - start;
+    // last pushState at ~300ms, then 300ms of URL quiet => at least ~550ms
+    assert.ok(ms >= 550, `${ms}ms`);
+    assert.match(page.url(), /step=3/);
+  });
+
   it('waits for in-flight network requests', async () => {
     const page = await browser.open({ '/': '<p>app</p>' });
     await page.route(`${APP_ORIGIN}/api`, async (route) => {
