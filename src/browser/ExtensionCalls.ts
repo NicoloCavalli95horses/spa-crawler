@@ -100,9 +100,30 @@ export class ExtensionCalls implements IExplorationHooks {
         // KeyValueStore keys only allow [a-zA-Z0-9!-_.'()]
         await this.output.saveJson(`extension-${when}-${call.fn.replace(/[^\w!.'()-]/g, '_')}`, value ?? null);
         log.info(`Extension: window.${call.fn}() called (${when})`);
+        this.reportRuntimeErrors(value);
       } catch (err) {
         log.warning(`Extension: window.${call.fn}() (${when}) failed: ${(err as Error).message}`);
       }
+    }
+  }
+
+  /**
+   * Surfaces extension runtime errors to the crawler log. A getData-style result carries per-tab
+   * `logs` with `{ type, msg }` entries; RAPIDOR records uncaught errors/rejections there, so the
+   * crawler can tell when the extension broke mid-run. Defensive: unknown shapes are ignored.
+   */
+  private reportRuntimeErrors(value: unknown): void {
+    const entries = Array.isArray(value) ? value : [value];
+    const errors: string[] = [];
+    for (const entry of entries) {
+      const logs = (entry as { logs?: unknown } | null)?.logs;
+      if (!Array.isArray(logs)) continue;
+      for (const l of logs) {
+        if ((l as { type?: string } | null)?.type === 'error') errors.push(String((l as { msg?: unknown }).msg));
+      }
+    }
+    if (errors.length > 0) {
+      log.warning(`Extension reported ${errors.length} runtime error(s); first: ${errors[0]}`);
     }
   }
 }
