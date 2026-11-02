@@ -41,6 +41,7 @@ export interface CrawlConfig {
   headless: boolean;            // false: opens a browser window to watch the crawler in action
   locale: string;               // language requested from sites: keeps texts and blocklist consistent
   blocklist: string[];          // texts not to click (e.g. logout)
+  ignoreClickablesWithin: string[];  // CSS selectors: never treat anything inside these as clickable (e.g. nav/header/footer chrome)
   dismissOverlays: boolean;     // close blocking modals (Escape / close control) before capturing, so an interstitial does not cost a depth level
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
   auth?: AuthConfig;            // credentials sent with every request to the explored site (optional)
@@ -72,9 +73,9 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
-  tabsPerSite: 5,
+  tabsPerSite: 5, // this must correlates to `maxStateSnapshots` in RAPIDOR, increase both if needed
   restoreDelayMs: 150,
-  viewport: { width: 1280, height: 800 },
+  viewport: { width: 1920, height: 1080 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
   rectGridPx: 4,
   includeUrlInFingerprint: true,
@@ -90,6 +91,8 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   locale: 'en-US',
   // case-insensitive substring match on text, aria-label and href
   blocklist: ['logout', 'log out', 'sign out', 'quit', 'delete'],
+  // skip clickables inside site chrome so exploration focuses on the main content; set to [] to explore everything
+  ignoreClickablesWithin: ['nav', 'header', 'footer'],
   // close blocking modals (Escape, then an explicit close control) before capturing a state
   dismissOverlays: true,
   // Chrome extension: call results end up in the KeyValueStore as

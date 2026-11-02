@@ -91,6 +91,19 @@ describe('ClickableExtractor', () => {
     assert.ok(found.includes('Hero link'), `semantic outlier must be kept: ${found}`);
   });
 
+  it('ignores clickables inside configured containers (nav/header/footer)', async () => {
+    const page = await browser.withHtml(`
+      <header><button>In header</button></header>
+      <nav><a href="/x">In nav</a></nav>
+      <main><button>In main</button></main>
+      <footer><a href="/y">In footer</a></footer>`);
+    const extractor = new ClickableExtractor(
+      new SelectorBuilder({ gridPx: 4, includeText: true }), [], ['nav', 'header', 'footer'],
+    );
+    const found = (await extractor.extract(page)).map((e) => e.text);
+    assert.deepEqual(found, ['In main']);
+  });
+
   it('applies the blocklist to text, aria-label and href', async () => {
     const found = await texts(`
       <button>Salva</button><button>Logout</button>

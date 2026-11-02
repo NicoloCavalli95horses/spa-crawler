@@ -41,7 +41,7 @@ export function buildExplorer(
   const graph = new StateGraph(output);
 
   // 2. modules that depend on the leaves
-  const extractor = new ClickableExtractor(selectorBuilder, cfg.blocklist);
+  const extractor = new ClickableExtractor(selectorBuilder, cfg.blocklist, cfg.ignoreClickablesWithin);
   const capturer = new StateCapturer(
     extractor, textExtractor, fingerprinter, cfg.dismissOverlays ? new OverlayDismisser() : undefined,
   );

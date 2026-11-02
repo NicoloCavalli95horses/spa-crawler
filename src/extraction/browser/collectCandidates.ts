@@ -13,7 +13,10 @@ export interface RawElement {
   href?: string;
 }
 
-export interface CollectOptions { maxTextLength: number }
+export interface CollectOptions {
+  maxTextLength: number;
+  ignoreWithin?: string[];   // CSS selectors: skip clickables inside (or equal to) a matching element
+}
 
 export function collectCandidates(opts: CollectOptions): RawElement[] {
   const SEMANTIC = [
@@ -46,8 +49,10 @@ export function collectCandidates(opts: CollectOptions): RawElement[] {
     }
   }
 
-  // 2. Filter: visible, enabled, not covered by other elements
+  // 2. Filter: visible, enabled, not covered, and not inside an ignored container (eg. nav/header/footer)
+  const ignoreSelector = opts.ignoreWithin?.length ? opts.ignoreWithin.join(',') : null;
   const isUsable = (el: Element): DOMRect | null => {
+    if (ignoreSelector && el.closest(ignoreSelector)) return null;
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return null;
     const style = getComputedStyle(el);

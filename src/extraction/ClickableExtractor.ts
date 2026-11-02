@@ -11,13 +11,16 @@ export class ClickableExtractor implements IClickableExtractor {
   constructor(
     private selectorBuilder: SelectorBuilder,
     blocklist: string[],
+    private ignoreWithin: string[] = [],   // CSS selectors: skip clickables inside these containers
     private maxTextLength = 80,
   ) {
     this.blocklist = blocklist.map((b) => b.toLowerCase());
   }
 
   async extract(page: Page): Promise<ElementDescriptor[]> {
-    const raws = await evaluateInPage(page, collectCandidates, { maxTextLength: this.maxTextLength });
+    const raws = await evaluateInPage(page, collectCandidates, {
+      maxTextLength: this.maxTextLength, ignoreWithin: this.ignoreWithin,
+    });
 
     const result: ElementDescriptor[] = [];
     const seen = new Map<string, number>();
