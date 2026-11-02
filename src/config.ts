@@ -1,8 +1,9 @@
 export interface ExtensionCall {
   fn: string;                              // name on window, e.g. '__RAPIDOR__getData'
   // start: before the exploration; end: after the last state; before-action: before each action on
-  // a page (its boolean result is treated as "ready"/"not ready", it never blocks the crawl)
-  when: 'start' | 'end' | 'before-action';
+  // a page; after-action: after each action, on the resulting page. before/after-action results are
+  // treated as "ready"/"not ready" and never block the crawl.
+  when: 'start' | 'end' | 'before-action' | 'after-action';
   args?: unknown[];              // arguments, JSON-serializable
 }
 
@@ -65,7 +66,7 @@ const auth: AuthConfig | undefined =
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
   // the protocol is required, otherwise Crawlee discards the URL
-  startUrl: process.env.START_URL ?? 'https://www.busuu.com/dashboard/timeline/a1',
+  startUrl: process.env.START_URL ?? 'https://learn.pimsleur.com/MiniLearn',
   maxDepth: 2,
   maxStates: 500,
   maxDurationSecs: 1800,
@@ -87,7 +88,7 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // browser locale and Accept-Language header: multilingual sites respond in English
   locale: 'en-US',
   // case-insensitive substring match on text, aria-label and href
-  blocklist: ['logout', 'log out', 'sign out', 'quit'],
+  blocklist: ['logout', 'log out', 'sign out', 'quit', 'delete'],
   // Chrome extension: call results end up in the KeyValueStore as
   // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world
   // (content script with "world": "MAIN" in the manifest), otherwise window cannot see them.
@@ -109,6 +110,9 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
       // before acting on a page, wait until the extension has captured at least one state for it
       // (otherwise a fast reload would navigate away before React state is recorded)
       { fn: '__RAPIDOR__waitToAction', when: 'before-action', args: [{ timeoutMs: 3000 }] },
+      // after acting, let the extension finish analysing the result (query-param probing, swapped-id
+      // request/response evaluation) before we reload to the next element
+      { fn: '__RAPIDOR__waitForAnalysis', when: 'after-action', args: [{ timeoutMs: 8000 }] },
       { fn: '__RAPIDOR__getData', when: 'end' },
     ],
   },

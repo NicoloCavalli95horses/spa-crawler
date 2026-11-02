@@ -45,4 +45,7 @@ export interface IExplorationHooks {
   /** Before each action on `page` (every tab). Must never throw. Used to let the extension record
    * the current page's state before the crawler navigates away. */
   beforeAction?(page: Page): Promise<void>;
+  /** After each action, on the resulting `page`. Must never throw. Used to let the extension finish
+   * analysing the result before the crawler reloads to the next element. */
+  afterAction?(page: Page): Promise<void>;
 }

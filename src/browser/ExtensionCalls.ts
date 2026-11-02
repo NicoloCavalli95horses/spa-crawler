@@ -20,9 +20,14 @@ export function extensionLaunchArgs(extension: ExtensionConfig): string[] {
  * and saves the returned value (JSON) next to the site's other results.
  * An extension error never interrupts the exploration.
  */
+interface HandshakeStats { total: number; ready: number; notReady: number; unavailable: number }
+
 export class ExtensionCalls implements IExplorationHooks {
-  // how often the before-action handshake found the page ready vs not (saved with the results)
-  private beforeActionStats = { total: 0, ready: 0, notReady: 0, unavailable: 0 };
+  // how often each handshake found the page ready vs not (saved with the results at the end)
+  private stats: Record<'before-action' | 'after-action', HandshakeStats> = {
+    'before-action': { total: 0, ready: 0, notReady: 0, unavailable: 0 },
+    'after-action': { total: 0, ready: 0, notReady: 0, unavailable: 0 },
+  };
 
   constructor(
     private extension: ExtensionConfig,
@@ -34,24 +39,32 @@ export class ExtensionCalls implements IExplorationHooks {
 
   async onEnd(page: Page): Promise<void> {
     await this.run(page, 'end');
-    if (this.beforeActionStats.total > 0) {
-      await this.output.saveJson('before-action-stats', this.beforeActionStats);
-      const { ready, notReady, unavailable, total } = this.beforeActionStats;
-      log.info(`wait-to-action: ${ready}/${total} ready, ${notReady} not ready, ${unavailable} unavailable`);
-    }
+    await this.saveHandshakeStats('before-action', 'wait-to-action');
+    await this.saveHandshakeStats('after-action', 'wait-for-analysis');
+  }
+
+  beforeAction(page: Page): Promise<void> { return this.handshake(page, 'before-action'); }
+  afterAction(page: Page): Promise<void> { return this.handshake(page, 'after-action'); }
+
+  private async saveHandshakeStats(when: 'before-action' | 'after-action', label: string): Promise<void> {
+    const s = this.stats[when];
+    if (s.total === 0) return;
+    await this.output.saveJson(`${when}-stats`, s);
+    log.info(`${label}: ${s.ready}/${s.total} ready, ${s.notReady} not ready, ${s.unavailable} unavailable`);
   }
 
   /**
-   * Runs the `before-action` calls on `page` and interprets each boolean result (false = the page
-   * is not ready yet). Never throws and never blocks: a missing function, a timeout or an error just
+   * Runs the handshake calls for `when` on `page` and interprets each boolean result (false = not
+   * ready / not idle). Never throws and never blocks: a missing function, a timeout or an error just
    * counts as "unavailable" and the crawler proceeds. Shared by every tab.
    */
-  async beforeAction(page: Page): Promise<void> {
-    const calls = this.extension.calls.filter((c) => c.when === 'before-action');
+  private async handshake(page: Page, when: 'before-action' | 'after-action'): Promise<void> {
+    const calls = this.extension.calls.filter((c) => c.when === when);
+    const stats = this.stats[when];
     // the function is injected at document_start, so it is almost always already there
     const probeMs = Math.min(this.timeoutMs, 1_000);
     for (const call of calls) {
-      this.beforeActionStats.total++;
+      stats.total++;
       try {
         await page.waitForFunction(
           (name) => typeof (window as unknown as Record<string, unknown>)[name] === 'function',
@@ -62,11 +75,11 @@ export class ExtensionCalls implements IExplorationHooks {
           ({ fn, args }) => (window as unknown as Record<string, (...a: unknown[]) => unknown>)[fn](...args),
           { fn: call.fn, args: call.args ?? [] },
         );
-        if (ready === false) this.beforeActionStats.notReady++;
-        else this.beforeActionStats.ready++;
+        if (ready === false) stats.notReady++;
+        else stats.ready++;
       } catch {
         // page without the extension injected, closed, or navigating: not worth blocking on
-        this.beforeActionStats.unavailable++;
+        stats.unavailable++;
       }
     }
   }

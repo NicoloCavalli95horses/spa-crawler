@@ -131,6 +131,10 @@ export class DfsExplorer {
     if (!(await this.executor.execute(page, action))) return null;
 
     const next = await this.capture(page, [...state.path, action], state.depth + 1);
+    // still on the clicked result and stable: let hooks (e.g. the extension) finish analysing it
+    // before the next element's restore reloads the page. Runs even for already-seen states, since
+    // the click may have loaded a different query-param resource worth analysing.
+    await this.hooks?.afterAction?.(page);
     this.graph.addEdge(state.id, action, next.id);
     // has and save are synchronous up to the insertion: of two tabs arriving together, only the first one saves
     if (this.store.has(next.id)) return null;   // state already seen: no recursion

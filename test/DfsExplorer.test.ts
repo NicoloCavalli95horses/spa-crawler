@@ -96,17 +96,18 @@ describe('DfsExplorer', () => {
     assert.ok(r.out.json.has('state-graph'));
   });
 
-  it('calls hooks.beforeAction once we are on a state, before each click on it', async () => {
+  it('calls beforeAction before each click and afterAction on each result', async () => {
     const app = new FakeApp({ S0: { a: 'S1', b: 'S2' }, S1: {}, S2: {} });
     const out = new MemoryOutput();
     const cap = app.capturer();
     const executor = app.executor();
     const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
-    let beforeActions = 0;
+    const order: string[] = [];
     const hooks = {
       onStart: async () => {},
       onEnd: async () => {},
-      beforeAction: async () => { beforeActions++; },
+      beforeAction: async () => { order.push('before'); },
+      afterAction: async () => { order.push('after'); },
     };
     const explorer = new DfsExplorer(
       noWait, executor, cap, navigator, new StateStore({ screenshots: false }, out), new StateGraph(out),
@@ -115,8 +116,8 @@ describe('DfsExplorer', () => {
 
     await explorer.explore(app.page());
 
-    // one beforeAction per click attempt: S0 has two clickables; S1 and S2 have none
-    assert.equal(beforeActions, 2);
+    // S0 has two clickables (S1, S2 have none): each click is wrapped before -> after, in order
+    assert.deepEqual(order, ['before', 'after', 'before', 'after']);
     assert.deepEqual(out.states.map((s) => s.id).sort(), ['S0', 'S1', 'S2']);
   });
 

@@ -74,4 +74,33 @@ describe('ExtensionCalls', () => {
       assert.equal(out.json.has('before-action-stats'), false);
     });
   });
+
+  describe('afterAction', () => {
+    const withAnalysis = {
+      path: 'test/fixtures/extension',
+      calls: [{ fn: '__waitForAnalysis', when: 'after-action' as const, args: [{ timeoutMs: 1 }] }],
+    };
+
+    it('runs after-action calls on the result page and saves its own summary', async () => {
+      const out = new MemoryOutput();
+      const calls = new ExtensionCalls(withAnalysis, out, 200);
+      // true = analysis idle, false = timed out
+      const page = await withHtml('<script>let n = 0; window.__waitForAnalysis = () => n++ > 0</script>');
+
+      await calls.afterAction(page);   // first: not idle
+      await calls.afterAction(page);   // second: idle
+      await calls.onEnd(page);
+
+      assert.deepEqual(out.json.get('after-action-stats'), { total: 2, ready: 1, notReady: 1, unavailable: 0 });
+      assert.equal(out.json.has('before-action-stats'), false);   // kept separate from before-action
+    });
+
+    it('does not throw when the function is absent', async () => {
+      const out = new MemoryOutput();
+      const calls = new ExtensionCalls(withAnalysis, out, 200);
+      await calls.afterAction(await withHtml('<p>nothing here</p>'));
+      await calls.onEnd(await withHtml('<p>nothing here</p>'));
+      assert.deepEqual(out.json.get('after-action-stats'), { total: 1, ready: 0, notReady: 0, unavailable: 1 });
+    });
+  });
 });
