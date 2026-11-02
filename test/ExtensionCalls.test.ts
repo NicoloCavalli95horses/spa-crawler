@@ -17,7 +17,7 @@ describe('ExtensionCalls', () => {
   };
   const html = '<script>window.getData = async (s) => ({ ok: "y" + s })</script>';
 
-  it('chiama solo le funzioni del momento richiesto e salva il risultato', async () => {
+  it('calls only the functions for the requested moment and saves the result', async () => {
     const out = new MemoryOutput();
     const calls = new ExtensionCalls(extension, out, 200);
     const page = await withHtml(html);
@@ -27,13 +27,13 @@ describe('ExtensionCalls', () => {
     assert.deepEqual([...out.json], [['extension-end-getData', { ok: 'y!' }]]);
   });
 
-  it('una funzione assente non lancia: viene solo saltata', async () => {
+  it('a missing function does not throw: it is just skipped', async () => {
     const out = new MemoryOutput();
     await new ExtensionCalls(extension, out, 200).onStart(await withHtml(html));
     assert.equal(out.json.size, 0);
   });
 
-  it('extensionLaunchArgs rifiuta cartelle senza manifest.json', () => {
+  it('extensionLaunchArgs rejects folders without manifest.json', () => {
     assert.throws(() => extensionLaunchArgs({ path: 'test', calls: [] }), /manifest\.json/);
     assert.equal(extensionLaunchArgs(extension).length, 2);
   });

@@ -7,7 +7,7 @@ export interface Edge {
   action: { type: Action['type']; targetId: string; text?: string; selector: string };
 }
 
-/** Grafo stato -> azione -> stato in memoria, salvato come JSON tramite il sink. */
+/** In-memory state -> action -> state graph, saved as JSON through the sink. */
 export class StateGraph implements IStateGraph {
   private edges: Edge[] = [];
   private keys = new Set<string>();

@@ -6,7 +6,7 @@ import { MemoryOutput, descriptor } from './helpers/fakes';
 const click = (id: string) => ({ type: 'click' as const, target: descriptor(id) });
 
 describe('StateGraph', () => {
-  it('registra gli archi con i dati dell\'azione', () => {
+  it('records edges with the action data', () => {
     const g = new StateGraph(new MemoryOutput());
     g.addEdge('S0', click('a'), 'S1');
     assert.equal(g.edgeCount(), 1);
@@ -16,14 +16,14 @@ describe('StateGraph', () => {
     });
   });
 
-  it('non duplica lo stesso arco', () => {
+  it('does not duplicate the same edge', () => {
     const g = new StateGraph(new MemoryOutput());
     g.addEdge('S0', click('a'), 'S1');
     g.addEdge('S0', click('a'), 'S1');
     assert.equal(g.edgeCount(), 1);
   });
 
-  it('tiene archi diversi per destinazione o elemento', () => {
+  it('keeps edges that differ by destination or element', () => {
     const g = new StateGraph(new MemoryOutput());
     g.addEdge('S0', click('a'), 'S1');
     g.addEdge('S0', click('a'), 'S2');
@@ -31,7 +31,7 @@ describe('StateGraph', () => {
     assert.equal(g.edgeCount(), 3);
   });
 
-  it('persist salva gli archi come JSON sotto la chiave configurata', async () => {
+  it('persist saves the edges as JSON under the configured key', async () => {
     const out = new MemoryOutput();
     const g = new StateGraph(out, 'grafo');
     g.addEdge('S0', click('a'), 'S1');

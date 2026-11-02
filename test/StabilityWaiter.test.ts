@@ -8,13 +8,13 @@ const browser = useBrowser();
 const timed = async (fn: () => Promise<void>) => { const t = Date.now(); await fn(); return Date.now() - t; };
 
 describe('StabilityWaiter', () => {
-  it('su una pagina ferma attende solo la finestra di quiete', async () => {
+  it('on a still page waits only for the quiet window', async () => {
     const page = await browser.withHtml('<p>ferma</p>');
     const ms = await timed(() => new StabilityWaiter({ quietMs: 300, timeoutMs: 5000 }).waitForStable(page));
     assert.ok(ms >= 300 && ms < 1500, `${ms}ms`);
   });
 
-  it('attende la fine delle mutazioni del DOM', async () => {
+  it('waits for DOM mutations to end', async () => {
     const page = await browser.withHtml('<div id="c"></div>');
     await page.evaluate(() => {
       let n = 0;
@@ -27,7 +27,7 @@ describe('StabilityWaiter', () => {
     assert.equal(await page.locator('#c p').count(), 8);
   });
 
-  it('attende un render che parte poco dopo la chiamata (es. dopo un click)', async () => {
+  it('waits for a render that starts shortly after the call (e.g. after a click)', async () => {
     const page = await browser.withHtml('<div id="c"></div>');
     await page.evaluate(() => setTimeout(() => {
       document.getElementById('c')!.textContent = 'arrivato';
@@ -36,22 +36,22 @@ describe('StabilityWaiter', () => {
     assert.equal(await page.textContent('#c'), 'arrivato');
   });
 
-  it('attende le richieste di rete in corso', async () => {
+  it('waits for in-flight network requests', async () => {
     const page = await browser.open({ '/': '<p>app</p>' });
     await page.route(`${APP_ORIGIN}/api`, async (route) => {
       await new Promise((r) => setTimeout(r, 800));
       await route.fulfill({ body: 'ok' });
     });
     const waiter = new StabilityWaiter({ quietMs: 200, timeoutMs: 5000 });
-    await waiter.waitForStable(page);   // aggancia il tracker di rete
+    await waiter.waitForStable(page);   // attaches the network tracker
     await page.evaluate(() => { void fetch('/api'); });
     const ms = await timed(() => waiter.waitForStable(page));
     assert.ok(ms >= 800, `${ms}ms`);
   });
 
-  it('ignora le richieste aperte da troppo tempo (long-poll)', async () => {
+  it('ignores requests that have been open too long (long-poll)', async () => {
     const page = await browser.open({ '/': '<p>app</p>' });
-    await page.route(`${APP_ORIGIN}/poll`, () => { /* non risponde mai */ });
+    await page.route(`${APP_ORIGIN}/poll`, () => { /* never responds */ });
     const waiter = new StabilityWaiter({ quietMs: 200, timeoutMs: 5000, longRequestMs: 500 });
     await waiter.waitForStable(page);
     await page.evaluate(() => { void fetch('/poll'); });
@@ -59,7 +59,7 @@ describe('StabilityWaiter', () => {
     assert.ok(ms < 2500, `${ms}ms`);
   });
 
-  it('attende le animazioni finite e ignora quelle infinite', async () => {
+  it('waits for finite animations and ignores infinite ones', async () => {
     const page = await browser.withHtml(`
       <style>
         @keyframes r { to { transform: rotate(360deg) } }
@@ -71,7 +71,7 @@ describe('StabilityWaiter', () => {
     assert.ok(ms >= 700 && ms < 3000, `${ms}ms`);
   });
 
-  it('non supera il timeout su una pagina che non si ferma mai', async () => {
+  it('does not exceed the timeout on a page that never settles', async () => {
     const page = await browser.withHtml('<div id="c"></div>');
     await page.evaluate(() => setInterval(() => {
       document.getElementById('c')!.textContent = String(Date.now());

@@ -1,4 +1,4 @@
-// Eseguita nel browser con evaluateInPage: niente import, tutto qui dentro.
+// Runs in the browser via evaluateInPage: no imports, everything lives in here.
 import type { Rect } from '../../core/geometry';
 
 export interface LocateArgs {
@@ -10,10 +10,10 @@ export interface LocateArgs {
 }
 
 /**
- * Ritrova l'elemento bersaglio e restituisce il punto (viewport) in cui cliccarlo.
- * 1. selettore strutturale, accettato solo se il rettangolo coincide;
- * 2. altrimenti geometria: si porta il rettangolo in viewport e si guarda cosa c'è al centro.
- * Restituisce null se l'elemento non c'è più o è coperto da altro.
+ * Finds the target element again and returns the point (viewport) where to click it.
+ * 1. structural selector, accepted only if the rectangle matches;
+ * 2. otherwise geometry: the rectangle is scrolled into the viewport and we check what is at its center.
+ * Returns null if the element is gone or covered by something else.
  */
 export function locateTarget(a: LocateArgs): { x: number; y: number } | null {
   const isFixed = (el: Element): boolean => {
@@ -37,7 +37,7 @@ export function locateTarget(a: LocateArgs): { x: number; y: number } | null {
   try {
     const el = document.querySelector(a.selector);
     if (el && matches(el)) target = el;
-  } catch { /* selettore non valido: si passa alla geometria */ }
+  } catch { /* invalid selector: fall back to geometry */ }
 
   if (!target) {
     const cx = a.rect.x + a.rect.width / 2;

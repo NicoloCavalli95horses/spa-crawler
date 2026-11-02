@@ -19,8 +19,9 @@ HEADLESS=false npm start
 # loggin in and save data into a new browser profile
 USER_DATA_DIR=$HOME/.crawler-profile DEBUG_NO_CRAWLING=true HEADLESS=false  npm start
 
-# explores the first N sites from the Tranco list
-npm run tranco -- --top 10 --depth 2         
+# explores the first N sites from the Tranco list (or N sites from rank P with --start P)
+npm run tranco -- --top 10 --depth 2
+npm run tranco -- --start 50 --top 5
 
 # tests (run with a real browser)
 npm test                                    
@@ -59,7 +60,7 @@ termination is guaranteed even on very rich UIs. An error on an element only cos
 | [src/browser/StateNavigator.ts](https://www.google.com/search?q=src/browser/StateNavigator.ts) | Restores a state by reloading the root and replaying the click path. If the ID does not match, the UI is non-deterministic and the branch is skipped. |
 | [src/browser/ActionExecutor.ts](https://www.google.com/search?q=src/browser/ActionExecutor.ts) | Clicks at the element's coordinates. Closes dialogs and popups, blocks navigation to other origins. |
 | [src/state/StateStore.ts](https://www.google.com/search?q=src/state/StateStore.ts), [src/state/StateGraph.ts](https://www.google.com/search?q=src/state/StateGraph.ts) | Seen states, already explored (state, element) pairs, graph edges. |
-| [scripts/tranco.ts](https://www.google.com/search?q=scripts/tranco.ts) | Runs the crawler on the first N domains from the [Tranco list](https://tranco-list.eu). |
+| [scripts/tranco.ts](https://www.google.com/search?q=scripts/tranco.ts) | Runs the crawler on N domains from the [Tranco list](https://tranco-list.eu), starting from rank P (`--start`, default 1). |
 
 ### Design Choices
 
@@ -147,9 +148,14 @@ Reads every folder in `storage/sites/` and writes `storage/sites/_stats.json` wi
 ```bash
 npm run tranco -- --top 10 --depth 2 --max-states 30 --max-duration 300 --concurrency 2
 
+# 5 sites starting from rank 50 (ranks 50..54)
+npm run tranco -- --start 50 --top 5
+
 # fixed list, for reproducible runs
-npm run tranco -- --list-id PYK6J 
+npm run tranco -- --list-id PYK6J
 
 ```
+
+`--top` is the number of sites, `--start` the Tranco rank of the first one (default `1`). Each site's logs are prefixed with its position in the run and its rank, e.g. `[2/5] #51 Exploring example.com (https://example.com/)`.
 
 Options override the limits in `config.ts`; the rest of the configuration remains valid.

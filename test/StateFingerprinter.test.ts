@@ -15,47 +15,47 @@ describe('StateFingerprinter', () => {
   const full = new StateFingerprinter({ includeUrl: true, includePageText: true });
   const bare = new StateFingerprinter({ includeUrl: false, includePageText: false });
 
-  it('è deterministico', () => {
+  it('is deterministic', () => {
     assert.equal(full.fingerprint(input()), full.fingerprint(input()));
   });
 
-  it("non dipende dall'ordine di cliccabili e testi", () => {
+  it('does not depend on the order of clickables and texts', () => {
     assert.equal(full.fingerprint(input()), full.fingerprint(input({
       clickables: [descriptor('b'), descriptor('a')],
       texts: ['Hai 3 notifiche', 'Benvenuto'],
     })));
   });
 
-  it('ignora i cliccabili duplicati', () => {
+  it('ignores duplicate clickables', () => {
     assert.equal(full.fingerprint(input()),
       full.fingerprint(input({ clickables: [descriptor('a'), descriptor('b'), descriptor('a')] })));
   });
 
-  it('cambia se cambia un cliccabile', () => {
+  it('changes when a clickable changes', () => {
     assert.notEqual(full.fingerprint(input()),
       full.fingerprint(input({ clickables: [descriptor('a'), descriptor('c')] })));
   });
 
-  it('con includeUrl distingue pathname e hash, ma non la query', () => {
+  it('with includeUrl tells apart pathname and hash, but not the query', () => {
     assert.notEqual(full.fingerprint(input()), full.fingerprint(input({ url: 'https://app.test/other#tab1' })));
     assert.notEqual(full.fingerprint(input()), full.fingerprint(input({ url: 'https://app.test/home#tab2' })));
     assert.equal(full.fingerprint(input()), full.fingerprint(input({ url: 'https://app.test/home?utm=x#tab1' })));
   });
 
-  it('senza includeUrl ignora l\'URL', () => {
+  it('without includeUrl ignores the URL', () => {
     assert.equal(bare.fingerprint(input()), bare.fingerprint(input({ url: 'https://app.test/other' })));
   });
 
-  it('con includePageText distingue contenuti diversi a parità di layout', () => {
+  it('with includePageText tells apart different contents with the same layout', () => {
     assert.notEqual(full.fingerprint(input()), full.fingerprint(input({ texts: ['Prodotto A'] })));
   });
 
-  it('con includePageText ignora cifre, maiuscole e spazi', () => {
+  it('with includePageText ignores digits, case and whitespace', () => {
     assert.equal(full.fingerprint(input()),
       full.fingerprint(input({ texts: ['  BENVENUTO ', 'Hai 15 notifiche'] })));
   });
 
-  it('senza includePageText ignora i testi', () => {
+  it('without includePageText ignores the texts', () => {
     assert.equal(bare.fingerprint(input()), bare.fingerprint(input({ texts: ['altro'] })));
   });
 });

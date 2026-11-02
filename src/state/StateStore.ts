@@ -5,7 +5,7 @@ import type { UIState } from '../core/types';
 
 export interface StateStoreOptions { screenshots: boolean }
 
-/** Stati visti e coppie (stato, elemento) già esplorate in memoria; i risultati vanno al sink. */
+/** Seen states and already explored (state, element) pairs, in memory; results go to the sink. */
 export class StateStore implements IStateStore {
   private states = new Set<string>();
   private explored = new Set<string>();
@@ -22,14 +22,14 @@ export class StateStore implements IStateStore {
 
   async save(page: Page, state: UIState): Promise<void> {
     if (this.states.has(state.id)) return;
-    this.states.add(state.id);   // prima di ogni await: lo stato è "visto" anche se il salvataggio fallisce
+    this.states.add(state.id);   // before any await: the state counts as "seen" even if saving fails
 
     let screenshotKey: string | undefined;
     if (this.opts.screenshots) {
       try {
         screenshotKey = await this.output.saveFile(`state-${state.id}`, await page.screenshot(), 'image/png');
       } catch (err) {
-        log.warning(`Screenshot dello stato ${state.id} non riuscito: ${(err as Error).message}`);
+        log.warning(`Screenshot of state ${state.id} failed: ${(err as Error).message}`);
       }
     }
 

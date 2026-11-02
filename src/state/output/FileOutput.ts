@@ -6,16 +6,16 @@ import type { StateRecord } from '../../core/types';
 export const SITES_DIR = 'storage/sites';
 export const STATES_FILE = 'states.json';
 
-/** `2026-10-30T12:16:20.701Z` -> `2026-10-30T12-16-20` (niente ':' nei nomi di file). */
+/** `2026-10-30T12:16:20.701Z` -> `2026-10-30T12-16-20` (no ':' in file names). */
 export function folderTimestamp(date: Date): string {
   return date.toISOString().slice(0, 19).replace(/:/g, '-');
 }
 
 /**
- * Una cartella per sito, `<sito>_<timestamp>`, con tutti i risultati di quell'analisi:
- *  - states.json: array JSON con un record per stato, valido anche a esplorazione in corso;
- *  - <chiave>.json: ogni saveJson (grafo, risultati dell'estensione), riscritto per intero in modo atomico;
- *  - <chiave>: i file binari (screenshot).
+ * One folder per site, `<site>_<timestamp>`, with all the results of that analysis:
+ *  - states.json: JSON array with one record per state, valid even while the exploration is running;
+ *  - <key>.json: every saveJson (graph, extension results), fully rewritten atomically;
+ *  - <key>: binary files (screenshots).
  */
 export class FileOutput implements IOutputSink {
   readonly dir: string;
@@ -27,7 +27,7 @@ export class FileOutput implements IOutputSink {
     this.dir = join(root, `${site}_${folderTimestamp(startedAt)}`);
   }
 
-  /** Le scritture di un sink vanno una alla volta: states.json è un file solo. */
+  /** A sink's writes go one at a time: states.json is a single file. */
   private serial<T>(task: () => Promise<T>): Promise<T> {
     const run = this.queue.then(task, task);
     this.queue = run.catch(() => {});
@@ -50,7 +50,7 @@ export class FileOutput implements IOutputSink {
         this.statesSize = Buffer.byteLength(head);
         return;
       }
-      // sovrascrive il "\n]" finale: dopo ogni stato il file è un JSON valido, senza riscriverlo tutto
+      // overwrites the trailing "\n]": after each state the file is valid JSON, without rewriting all of it
       const tail = `,\n${item}\n]`;
       const fh = await open(file, 'r+');
       try {
@@ -74,7 +74,7 @@ export class FileOutput implements IOutputSink {
     return this.serial(async () => {
       await this.ensureDir();
       const file = join(this.dir, `${key}.json`);
-      // scrittura + rename: chi legge (il daemon) non vede mai un file a metà
+      // write + rename: readers (the daemon) never see a half-written file
       await writeFile(`${file}.tmp`, JSON.stringify(value, null, 1));
       await rename(`${file}.tmp`, file);
     });

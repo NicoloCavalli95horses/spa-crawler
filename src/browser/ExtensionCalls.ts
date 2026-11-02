@@ -6,19 +6,19 @@ import type { IExplorationHooks, IOutputSink } from '../core/interfaces';
 import type { ExtensionConfig } from '../config';
 import { evaluateInPage } from './evaluateInPage';
 
-/** Argomenti di Chromium che caricano l'estensione (Chrome ignora le altre, per questo --disable-...). */
+/** Chromium arguments that load the extension (Chrome ignores other extensions, hence --disable-...). */
 export function extensionLaunchArgs(extension: ExtensionConfig): string[] {
   const dir = resolve(extension.path);
   if (!existsSync(join(dir, 'manifest.json'))) {
-    throw new Error(`extension.path "${extension.path}": manifest.json non trovato in ${dir} (i path relativi partono dalla cartella di lavoro: ${process.cwd()})`);
+    throw new Error(`extension.path "${extension.path}": manifest.json not found in ${dir} (relative paths start from the working directory: ${process.cwd()})`);
   }
   return [`--disable-extensions-except=${dir}`, `--load-extension=${dir}`];
 }
 
 /**
- * Chiama le funzioni `window.*` esposte dall'estensione a inizio e fine esplorazione
- * e salva il valore restituito (JSON) accanto agli altri risultati del sito.
- * Un errore sull'estensione non interrompe mai l'esplorazione.
+ * Calls the `window.*` functions exposed by the extension at the start and end of the exploration
+ * and saves the returned value (JSON) next to the site's other results.
+ * An extension error never interrupts the exploration.
  */
 export class ExtensionCalls implements IExplorationHooks {
   constructor(
@@ -33,7 +33,7 @@ export class ExtensionCalls implements IExplorationHooks {
   private async run(page: Page, when: 'start' | 'end'): Promise<void> {
     for (const call of this.extension.calls.filter((c) => c.when === when)) {
       try {
-        // l'estensione può iniettare le sue API dopo il caricamento della pagina
+        // the extension may inject its APIs after the page has loaded
         await page.waitForFunction(
           (name) => typeof (window as unknown as Record<string, unknown>)[name] === 'function',
           call.fn, { timeout: this.timeoutMs },
@@ -43,11 +43,11 @@ export class ExtensionCalls implements IExplorationHooks {
           ({ fn, args }) => (window as unknown as Record<string, (...a: unknown[]) => unknown>)[fn](...args),
           { fn: call.fn, args: call.args ?? [] },
         );
-        // le chiavi del KeyValueStore ammettono solo [a-zA-Z0-9!-_.'()]
+        // KeyValueStore keys only allow [a-zA-Z0-9!-_.'()]
         await this.output.saveJson(`extension-${when}-${call.fn.replace(/[^\w!.'()-]/g, '_')}`, value ?? null);
-        log.info(`Estensione: window.${call.fn}() chiamata (${when})`);
+        log.info(`Extension: window.${call.fn}() called (${when})`);
       } catch (err) {
-        log.warning(`Estensione: window.${call.fn}() (${when}) non riuscita: ${(err as Error).message}`);
+        log.warning(`Extension: window.${call.fn}() (${when}) failed: ${(err as Error).message}`);
       }
     }
   }

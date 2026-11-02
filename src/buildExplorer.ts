@@ -1,5 +1,5 @@
-// Composition root: l'unico punto che conosce le classi concrete.
-// Tutto il resto dipende solo dalle interfacce in core/interfaces.ts.
+// Composition root: the only place that knows the concrete classes.
+// Everything else depends only on the interfaces in core/interfaces.ts.
 import type { CrawlConfig } from './config';
 import { DfsExplorer } from './core/DfsExplorer';
 import { SelectorBuilder } from './extraction/SelectorBuilder';
@@ -17,14 +17,14 @@ import { StateGraph } from './state/StateGraph';
 import { FileOutput } from './state/output/FileOutput';
 
 /**
- * @param rootUrl URL da cui parte (e a cui torna) l'esplorazione, già dopo i redirect
- * @param site    etichetta del sito nei risultati; di default l'host di rootUrl
+ * @param rootUrl URL where the exploration starts (and returns to), already past redirects
+ * @param site    site label in the results; defaults to the host of rootUrl
  */
 export function buildExplorer(
   rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname,
 ): DfsExplorer {
-  // 1. foglie: nessuna dipendenza da altri moduli
-  // una cartella per sito e per esecuzione: <sito>_<timestamp>
+  // 1. leaves: no dependencies on other modules
+  // one folder per site and per run: <site>_<timestamp>
   const output = new FileOutput(site);
   const selectorBuilder = new SelectorBuilder({
     gridPx: cfg.rectGridPx, includeText: cfg.text.inElementId,
@@ -39,13 +39,13 @@ export function buildExplorer(
   const store = new StateStore({ screenshots: cfg.screenshots }, output);
   const graph = new StateGraph(output);
 
-  // 2. moduli che dipendono dalle foglie
+  // 2. modules that depend on the leaves
   const extractor = new ClickableExtractor(selectorBuilder, cfg.blocklist);
   const capturer = new StateCapturer(extractor, textExtractor, fingerprinter);
   const executor = new ActionExecutor(new URL(rootUrl).origin, cfg.actionTimeoutMs, cfg.rectGridPx);
   const navigator = new StateNavigator(rootUrl, executor, waiter, capturer, new RequestThrottle(cfg.restoreDelayMs));
 
-  // 3. l'algoritmo riceve tutto già pronto
+  // 3. the algorithm receives everything ready-made
   return new DfsExplorer(
     waiter, executor, capturer, navigator, store, graph,
     { maxDepth: cfg.maxDepth, maxStates: cfg.maxStates, maxDurationSecs: cfg.maxDurationSecs },

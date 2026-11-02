@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { RequestThrottle } from '../src/browser/RequestThrottle';
 
 describe('RequestThrottle', () => {
-  it('distanzia le attese concorrenti di almeno il ritardo', async () => {
+  it('spaces concurrent waits at least the delay apart', async () => {
     const throttle = new RequestThrottle(40);
     const times: number[] = [];
     await Promise.all([1, 2, 3].map(async () => { await throttle.wait(); times.push(Date.now()); }));
@@ -12,7 +12,7 @@ describe('RequestThrottle', () => {
     assert.ok(times[2] - times[1] >= 35, `gap ${times[2] - times[1]}`);
   });
 
-  it('la prima richiesta non aspetta', async () => {
+  it('the first request does not wait', async () => {
     const start = Date.now();
     await new RequestThrottle(500).wait();
     assert.ok(Date.now() - start < 100);

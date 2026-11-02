@@ -5,7 +5,7 @@ import type {
 } from '../../src/core/interfaces';
 import type { Action, ElementDescriptor, Snapshot, StateRecord } from '../../src/core/types';
 
-log.setLevel(log.LEVELS.OFF);   // niente rumore dai log del motore durante i test
+log.setLevel(log.LEVELS.OFF);   // no noise from the engine logs during tests
 
 export function descriptor(id: string, extra: Partial<ElementDescriptor> = {}): ElementDescriptor {
   return {
@@ -14,7 +14,7 @@ export function descriptor(id: string, extra: Partial<ElementDescriptor> = {}): 
   };
 }
 
-/** Sink in memoria: permette di ispezionare cosa il motore avrebbe salvato. */
+/** In-memory sink: lets tests inspect what the engine would have saved. */
 export class MemoryOutput implements IOutputSink {
   states: StateRecord[] = [];
   files = new Map<string, { data: Buffer; contentType: string }>();
@@ -26,8 +26,8 @@ export class MemoryOutput implements IOutputSink {
 }
 
 /**
- * Applicazione simulata: una macchina a stati.
- * transitions[stato][elemento] = stato di arrivo; 'THROW' fa lanciare un errore all'executor.
+ * Simulated application: a state machine.
+ * transitions[state][element] = target state; 'THROW' makes the executor throw an error.
  */
 export class FakeApp {
   current: string;
@@ -38,7 +38,7 @@ export class FakeApp {
     this.current = root;
   }
 
-  /** Il minimo di Page che il motore usa sulla pagina finta. */
+  /** The bare minimum of Page that the engine uses on the fake page. */
   page(): Page {
     return {
       url: () => `https://app.test/#${this.current}`,
@@ -62,7 +62,7 @@ export class FakeApp {
     return {
       execute: async (_page: Page, action: Action) => {
         const next = this.transitions[this.current]?.[action.target.id];
-        if (next === 'THROW') throw new Error(`boom su ${action.target.id}`);
+        if (next === 'THROW') throw new Error(`boom on ${action.target.id}`);
         if (!next) return false;
         this.clicks.push(`${this.current}.${action.target.id}`);
         this.current = next;
@@ -75,8 +75,8 @@ export class FakeApp {
 export const noWait: IStabilityWaiter = { waitForStable: async () => {} };
 
 /**
- * Più tab sulla stessa app simulata: ognuna ha il suo stato corrente, ogni azione cede il
- * controllo (come un click vero), così le tab si alternano davvero.
+ * Several tabs on the same simulated app: each has its own current state, and every action yields
+ * control (like a real click), so the tabs really interleave.
  */
 export class FakeTabs {
   private apps: FakeApp[];

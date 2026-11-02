@@ -13,7 +13,7 @@ const state = (id: string): UIState => ({
 });
 
 describe('StateStore', () => {
-  it('ricorda gli stati salvati e li conta', async () => {
+  it('remembers saved states and counts them', async () => {
     const store = new StateStore({ screenshots: false }, new MemoryOutput());
     assert.equal(store.has('S1'), false);
     await store.save(page(), state('S1'));
@@ -21,7 +21,7 @@ describe('StateStore', () => {
     assert.equal(store.count(), 1);
   });
 
-  it('salva un record completo una sola volta per stato', async () => {
+  it('saves a full record only once per state', async () => {
     const out = new MemoryOutput();
     const store = new StateStore({ screenshots: false }, out);
     await store.save(page(), state('S1'));
@@ -35,14 +35,14 @@ describe('StateStore', () => {
     });
   });
 
-  it('salva lo screenshot e ne registra la chiave', async () => {
+  it('saves the screenshot and records its key', async () => {
     const out = new MemoryOutput();
     await new StateStore({ screenshots: true }, out).save(page(), state('S1'));
     assert.equal(out.states[0].screenshotKey, 'state-S1');
     assert.equal(out.files.get('state-S1')?.contentType, 'image/png');
   });
 
-  it('se lo screenshot fallisce salva comunque lo stato, senza chiave', async () => {
+  it('if the screenshot fails, still saves the state without a key', async () => {
     const out = new MemoryOutput();
     const failing = page(async () => { throw new Error('pagina chiusa'); });
     await new StateStore({ screenshots: true }, out).save(failing, state('S1'));
@@ -51,7 +51,7 @@ describe('StateStore', () => {
     assert.equal(out.files.size, 0);
   });
 
-  it('tiene traccia delle coppie stato-elemento esplorate', () => {
+  it('tracks the explored state-element pairs', () => {
     const store = new StateStore({ screenshots: false }, new MemoryOutput());
     assert.equal(store.isExplored('S1', 'a'), false);
     store.markExplored('S1', 'a');

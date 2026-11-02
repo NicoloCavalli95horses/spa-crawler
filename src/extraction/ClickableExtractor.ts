@@ -25,7 +25,7 @@ export class ClickableExtractor implements IClickableExtractor {
       if (this.isBlocked(raw)) continue;
       const desc = this.selectorBuilder.build(raw);
 
-      // due elementi con stesso tag e stesso rettangolo: li distinguiamo con l'ordine
+      // two elements with the same tag and rectangle: we tell them apart by their order
       const n = seen.get(desc.id) ?? 0;
       seen.set(desc.id, n + 1);
       if (n > 0) desc.id = `${desc.id}:${n}`;

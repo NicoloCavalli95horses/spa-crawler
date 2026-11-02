@@ -1,8 +1,9 @@
 /**
- * Esplora i primi N siti della lista Tranco (https://tranco-list.eu).
+ * Explores N sites of the Tranco list (https://tranco-list.eu), starting from rank P (default 1).
  *
  *   npm run tranco -- --top 10 --depth 2 --max-states 30 --max-duration 300 --concurrency 2 --tabs 3
- *   npm run tranco -- --list-id PYK6J      # lista fissa, per esecuzioni riproducibili
+ *   npm run tranco -- --start 50 --top 5   # ranks 50..54
+ *   npm run tranco -- --list-id PYK6J      # fixed list, for reproducible runs
  */
 import { parseArgs } from 'node:util';
 import { KeyValueStore, log } from 'crawlee';
@@ -16,6 +17,7 @@ const TRANCO = 'https://tranco-list.eu';
 const { values: args } = parseArgs({
   options: {
     top: { type: 'string', default: '10' },
+    start: { type: 'string', default: '1' },
     'list-id': { type: 'string' },
     depth: { type: 'string', default: '2' },
     'max-states': { type: 'string', default: '30' },
@@ -25,52 +27,65 @@ const { values: args } = parseArgs({
   },
 });
 
-function positiveInt(name: string, value: string | undefined): number {
+function intArg({ name, value, min = 0 }: { name: string; value: string | undefined; min?: number }): number {
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) throw new Error(`--${name} deve essere un intero positivo, non "${value}"`);
+  if (!Number.isInteger(n) || n < min) throw new Error(`--${name} must be an integer >= ${min}, not "${value}"`);
   return n;
 }
 
 async function fetchText(url: string): Promise<string> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} ha risposto ${res.status}`);
+  if (!res.ok) throw new Error(`${url} responded ${res.status}`);
   return res.text();
 }
 
-/** Scarica i primi `top` domini della lista indicata, o dell'ultima disponibile. */
-async function fetchTranco(top: number, listId?: string): Promise<{ listId: string; domains: string[] }> {
+interface TrancoEntry { rank: number; domain: string }
+
+/** Downloads `count` domains starting from rank `start` of the given list, or of the latest available one. */
+async function fetchTranco(
+  { start, count, listId }: { start: number; count: number; listId?: string },
+): Promise<{ listId: string; entries: TrancoEntry[] }> {
   const id = listId ?? (await fetchText(`${TRANCO}/top-1m-id`)).trim();
-  const csv = await fetchText(`${TRANCO}/download/${id}/${top}`);
-  const domains = csv.split('\n')
-    .map((line) => line.trim().split(',')[1])   // formato: "rank,dominio"
-    .filter((d): d is string => Boolean(d))
-    .slice(0, top);
-  return { listId: id, domains };
+  // the API only serves the top N: download up to the last requested rank and drop the ones before `start`
+  const csv = await fetchText(`${TRANCO}/download/${id}/${start + count - 1}`);
+  const entries = csv.split('\n')
+    .map((line) => line.trim().split(','))   // format: "rank,domain"
+    .map(([rank, domain]) => ({ rank: Number(rank), domain }))
+    .filter((e): e is TrancoEntry => Boolean(e.domain) && e.rank >= start)
+    .slice(0, count);
+  return { listId: id, entries };
 }
 
-const top = positiveInt('top', args.top);
+const start = intArg({ name: 'start', value: args.start, min: 1 });
+const top = intArg({ name: 'top', value: args.top, min: 1 });
 const cfg: CrawlConfig = {
   ...config,
-  maxDepth: positiveInt('depth', args.depth),
-  maxStates: positiveInt('max-states', args['max-states']),
-  maxDurationSecs: positiveInt('max-duration', args['max-duration']),
-  concurrency: Math.max(1, positiveInt('concurrency', args.concurrency)),
-  tabsPerSite: Math.max(1, positiveInt('tabs', args.tabs)),
+  maxDepth: intArg({ name: 'depth', value: args.depth }),
+  maxStates: intArg({ name: 'max-states', value: args['max-states'] }),
+  maxDurationSecs: intArg({ name: 'max-duration', value: args['max-duration'] }),
+  concurrency: intArg({ name: 'concurrency', value: args.concurrency, min: 1 }),
+  tabsPerSite: intArg({ name: 'tabs', value: args.tabs, min: 1 }),
 };
 
-const { listId, domains } = await fetchTranco(top, args['list-id']);
-log.info(`Lista Tranco ${listId}: ${domains.join(', ')}`);
-log.info(`Limiti per sito: profondità ${cfg.maxDepth}, ${cfg.maxStates} stati, ${cfg.maxDurationSecs}s`);
+const { listId, entries } = await fetchTranco({ start, count: top, listId: args['list-id'] });
+const domains = entries.map((e) => e.domain);
+log.info(`Tranco list ${listId}, ranks ${start}-${start + entries.length - 1}: ${domains.join(', ')}`);
+log.info(`Per-site limits: depth ${cfg.maxDepth}, ${cfg.maxStates} states, ${cfg.maxDurationSecs}s`);
 
-const stats = await runCrawler(domains.map((d) => `https://${d}/`), cfg);
+const stats = await runCrawler(entries.map((e, i) => ({
+  url: `https://${e.domain}/`,
+  // shown in front of the site logs: position in this run and Tranco rank
+  userData: { progress: `[${i + 1}/${entries.length}] #${e.rank}` },
+})), cfg);
 
-// riepilogo per sito, salvato anche accanto ai risultati
-// cartelle ordinate per nome: per ogni sito l'ultima analisi è quella di questa esecuzione
+// per-site summary, also saved next to the results
+// folders sorted by name: for each site the last analysis is the one from this run
 const statesBySite = new Map<string, number>();
 for (const s of (await collect(SITES_DIR)).perSite) statesBySite.set(s.site, s.states);
 
 const summary = {
   listId,
+  start,
   domains,
   limits: { maxDepth: cfg.maxDepth, maxStates: cfg.maxStates, maxDurationSecs: cfg.maxDurationSecs },
   statesBySite: Object.fromEntries(statesBySite),
@@ -79,5 +94,5 @@ const summary = {
 };
 await KeyValueStore.setValue('tranco-summary', summary);
 
-console.table(domains.map((d, i) => ({ rank: i + 1, dominio: d, stati: statesBySite.get(d) ?? 0 })));
-console.log(`Completati: ${stats.requestsFinished}, falliti: ${stats.requestsFailed}`);
+console.table(entries.map((e) => ({ rank: e.rank, domain: e.domain, states: statesBySite.get(e.domain) ?? 0 })));
+console.log(`Finished: ${stats.requestsFinished}, failed: ${stats.requestsFailed}`);

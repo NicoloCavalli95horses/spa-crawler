@@ -1,31 +1,31 @@
 import type { Rect } from './geometry';
 
 export interface ElementDescriptor {
-  id: string;          // hash di tag + rettangolo arrotondato (+ testo normalizzato, se attivo)
-  selector: string;    // percorso CSS strutturale, senza id né classi
+  id: string;          // hash of tag + rounded rectangle (+ normalized text, if enabled)
+  selector: string;    // structural CSS path, without ids or classes
   tag: string;
-  rect: Rect;          // coordinate documento (viewport se l'elemento è fixed)
-  fixed: boolean;      // true se l'elemento o un antenato ha position: fixed
+  rect: Rect;          // document coordinates (viewport if the element is fixed)
+  fixed: boolean;      // true if the element or an ancestor has position: fixed
   text?: string;
   role?: string;
   href?: string;
 }
 export interface Action { type: 'click'; target: ElementDescriptor }
 
-/** Fotografia della pagina in un istante: ciò che serve per identificare lo stato. */
+/** Snapshot of the page at a given moment: what is needed to identify the state. */
 export interface Snapshot {
   id: string;
   url: string;
   clickables: ElementDescriptor[];
-  texts: string[];     // blocchi di testo visibili, così come appaiono
+  texts: string[];     // visible text blocks, as they appear
 }
 
 export interface UIState extends Snapshot {
   depth: number;
-  path: Action[];      // azioni dalla radice: serve al ripristino
+  path: Action[];      // actions from the root: used for restoring
 }
 
-/** Ciò che viene salvato per ogni stato. */
+/** What gets saved for each state. */
 export interface StateRecord {
   id: string;
   url: string;

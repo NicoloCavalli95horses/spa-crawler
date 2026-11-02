@@ -7,11 +7,11 @@ import type { UIState, Action, ElementDescriptor } from './types';
 
 export interface ExplorationLimits {
   maxDepth: number;
-  maxStates: number;   // per tab: garantisce la terminazione anche su UI molto ricche
-  maxDurationSecs: number;  // budget di tempo: chiude prima del timeout di Crawlee
+  maxStates: number;   // per tab: guarantees termination even on very rich UIs
+  maxDurationSecs: number;  // time budget: shuts down before the Crawlee timeout
 }
 
-/** Una tab che esplora: ha la sua pagina e il suo conteggio di stati salvati. */
+/** A tab that explores: it has its own page and its own count of saved states. */
 interface Worker {
   page: Page;
   saved: number;
@@ -22,9 +22,9 @@ const IDLE_POLL_MS = 50;
 
 export class DfsExplorer {
   private deadline = Infinity;
-  /** Stati con ancora elementi da provare: da qui una tab libera prende lavoro da un'altra. */
+  /** States with elements still to try: an idle tab takes work from another one here. */
   private frontier: UIState[] = [];
-  private active = 0;   // tab che stanno visitando uno stato
+  private active = 0;   // tabs currently visiting a state
 
   constructor(
     private waiter: IStabilityWaiter,
@@ -38,9 +38,9 @@ export class DfsExplorer {
   ) {}
 
   /**
-   * Ogni tab fa una DFS; le tab condividono store e grafo. Il lavoro si divide da solo:
-   * markExplored è sincrono, quindi chi lo chiama per primo si prende la coppia (stato, elemento).
-   * `extraPages` sono tab aggiuntive dello stesso contesto; gli hook girano solo su `page`.
+   * Each tab runs a DFS; tabs share the store and the graph. Work splits by itself:
+   * markExplored is synchronous, so whoever calls it first claims the (state, element) pair.
+   * `extraPages` are extra tabs of the same context; hooks run only on `page`.
    */
   async explore(page: Page, extraPages: Page[] = []): Promise<void> {
     this.deadline = Date.now() + this.limits.maxDurationSecs * 1000;
@@ -54,19 +54,19 @@ export class DfsExplorer {
       if (failed) throw failed.reason;
     } finally {
       await this.hooks?.onEnd(page);
-      // anche se l'esplorazione si interrompe, il grafo raccolto fin qui viene salvato
+      // even if the exploration is interrupted, the graph collected so far is saved
       await this.graph.persist();
-      log.info(`Esplorazione terminata: ${this.store.count()} stati, ${this.graph.edgeCount()} archi`);
+      log.info(`Exploration finished: ${this.store.count()} states, ${this.graph.edgeCount()} edges`);
     }
   }
 
-  /** Visita uno stato dopo l'altro finché c'è lavoro; se non ce n'è ma altre tab stanno ancora scoprendo, aspetta. */
+  /** Visits one state after another while there is work; if there is none but other tabs are still discovering, waits. */
   private async work(w: Worker): Promise<void> {
     for (;;) {
       if (this.limitReached(w)) return;
       const state = this.claimable();
       if (state) {
-        this.active++;   // senza await tra claimable e qui: nessun'altra tab può concludere che il lavoro è finito
+        this.active++;   // no await between claimable and here: no other tab can conclude that the work is done
         try {
           await this.visit(w, state);
         } finally {
@@ -80,7 +80,7 @@ export class DfsExplorer {
     }
   }
 
-  /** Il più vecchio stato con elementi ancora da provare: percorso corto, quindi ripristino economico. */
+  /** The oldest state with elements still to try: short path, hence a cheap restore. */
   private claimable(): UIState | null {
     while (this.frontier.length > 0) {
       const s = this.frontier[0];
@@ -108,19 +108,19 @@ export class DfsExplorer {
       try {
         next = await this.step(w, state, el);
       } catch (err) {
-        // un elemento problematico costa solo il suo ramo
-        log.warning(`Errore su "${el.text ?? el.selector}" nello stato ${state.id}: ${(err as Error).message}`);
+        // a problematic element only costs its own branch
+        log.warning(`Error on "${el.text ?? el.selector}" in state ${state.id}: ${(err as Error).message}`);
         continue;
       }
       if (next) await this.visit(w, next);
     }
   }
 
-  /** Ripristina lo stato, clicca l'elemento, cattura il risultato. Restituisce lo stato se è nuovo. */
+  /** Restores the state, clicks the element, captures the result. Returns the state if it is new. */
   private async step(w: Worker, state: UIState, el: ElementDescriptor): Promise<UIState | null> {
     const { page } = w;
     if (!(await this.navigator.restore(page, state))) {
-      log.debug(`Stato ${state.id} non ripristinabile, salto "${el.text ?? el.selector}"`);
+      log.debug(`State ${state.id} cannot be restored, skipping "${el.text ?? el.selector}"`);
       return null;
     }
 
@@ -129,24 +129,24 @@ export class DfsExplorer {
 
     const next = await this.capture(page, [...state.path, action], state.depth + 1);
     this.graph.addEdge(state.id, action, next.id);
-    // has e save sono sincroni fino all'inserimento: di due tab arrivate insieme, solo la prima salva
-    if (this.store.has(next.id)) return null;   // stato già visto: niente ricorsione
+    // has and save are synchronous up to the insertion: of two tabs arriving together, only the first one saves
+    if (this.store.has(next.id)) return null;   // state already seen: no recursion
 
     await this.save(w, next);
-    await this.graph.persist();   // il grafo cresce insieme agli stati: chi legge a esplorazione in corso lo vede aggiornato
-    log.info(`Nuovo stato ${next.id} a profondità ${next.depth} (${next.clickables.length} cliccabili)`);
+    await this.graph.persist();   // the graph grows along with the states: readers see it up to date while the exploration is running
+    log.info(`New state ${next.id} at depth ${next.depth} (${next.clickables.length} clickables)`);
     return next;
   }
 
   private limitReached(w: Worker): boolean {
     let reason: string | null = null;
     if (w.saved >= this.limits.maxStates) {
-      reason = `limite di ${this.limits.maxStates} stati`;
+      reason = `limit of ${this.limits.maxStates} states`;
     } else if (Date.now() >= this.deadline) {
-      reason = `budget di ${this.limits.maxDurationSecs}s`;
+      reason = `budget of ${this.limits.maxDurationSecs}s`;
     }
     if (reason && !w.limitLogged) {
-      log.warning(`Raggiunto il ${reason}: esplorazione interrotta`);
+      log.warning(`Reached the ${reason}: exploration stopped`);
       w.limitLogged = true;
     }
     return reason !== null;

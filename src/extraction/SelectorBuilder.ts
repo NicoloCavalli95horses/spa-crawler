@@ -5,14 +5,14 @@ import type { ElementDescriptor } from '../core/types';
 import type { RawElement } from './browser/collectCandidates';
 
 export interface SelectorBuilderOptions {
-  gridPx: number;        // passo di arrotondamento del rettangolo usato nell'id
-  includeText: boolean;  // aggiunge all'id il testo normalizzato dell'elemento
+  gridPx: number;        // rounding step of the rectangle used in the id
+  includeText: boolean;  // adds the element's normalized text to the id
 }
 
 export class SelectorBuilder {
   constructor(private opts: SelectorBuilderOptions) {}
 
-  /** L'id dipende da tag, geometria ed eventualmente testo: mai da id o classi del DOM. */
+  /** The id depends on tag, geometry and optionally text: never on DOM ids or classes. */
   build(raw: RawElement): ElementDescriptor {
     const r = snapRect(raw.rect, this.opts.gridPx);
     const text = raw.text ?? raw.ariaLabel;

@@ -8,12 +8,12 @@ const extract = async (html: string, opts?: ConstructorParameters<typeof PageTex
   new PageTextExtractor(opts).extract(await browser.withHtml(html));
 
 describe('PageTextExtractor', () => {
-  it('restituisce i blocchi visibili in ordine, con spazi compattati', async () => {
+  it('returns the visible blocks in order, with collapsed whitespace', async () => {
     assert.deepEqual(await extract('<h1>Titolo</h1><p>  Primo\n   paragrafo </p><button>Ok</button>'),
       ['Titolo', 'Primo paragrafo', 'Ok']);
   });
 
-  it('esclude testo nascosto, script, stili e aria-hidden', async () => {
+  it('excludes hidden text, scripts, styles and aria-hidden', async () => {
     assert.deepEqual(await extract(`
       <p>Visibile</p><p style="display:none">Nascosto</p>
       <p style="visibility:hidden">Invisibile</p><div aria-hidden="true">Decorativo</div>
@@ -21,11 +21,11 @@ describe('PageTextExtractor', () => {
       ['Visibile']);
   });
 
-  it('elimina i duplicati', async () => {
+  it('removes duplicates', async () => {
     assert.deepEqual(await extract('<p>Ciao</p><p>Ciao</p><p>Mondo</p>'), ['Ciao', 'Mondo']);
   });
 
-  it('rispetta i limiti di blocchi e lunghezza', async () => {
+  it('respects the block count and length limits', async () => {
     const out = await extract('<p>uno</p><p>due</p><p>tre</p><p>abcdefghij</p>',
       { maxBlocks: 2, maxBlockLength: 5 });
     assert.deepEqual(out, ['uno', 'due']);

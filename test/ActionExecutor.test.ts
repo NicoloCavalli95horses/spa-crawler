@@ -14,7 +14,7 @@ const extractor = new ClickableExtractor(new SelectorBuilder({ gridPx: 4, includ
 
 async function target(page: Page, text: string): Promise<ElementDescriptor> {
   const el = (await extractor.extract(page)).find((e) => e.text === text);
-  assert.ok(el, `elemento "${text}" non trovato`);
+  assert.ok(el, `element "${text}" not found`);
   return el;
 }
 const click = (t: ElementDescriptor): Action => ({ type: 'click', target: t });
@@ -26,36 +26,36 @@ const COUNTER = `
   <button onclick="clicks.push('b')">B</button>`;
 
 describe('ActionExecutor', () => {
-  it("clicca l'elemento indicato", async () => {
+  it('clicks the given element', async () => {
     const page = await browser.open({ '/': COUNTER });
     assert.equal(await executor().execute(page, click(await target(page, 'B'))), true);
     assert.deepEqual(await clicks(page), ['b']);
   });
 
-  it('se il selettore non regge più ritrova l\'elemento dalla geometria', async () => {
+  it('falls back to geometry when the selector no longer matches', async () => {
     const page = await browser.open({ '/': COUNTER });
     const b = await target(page, 'B');
     assert.equal(await executor().execute(page, click({ ...b, selector: 'body > nav:nth-of-type(9)' })), true);
     assert.deepEqual(await clicks(page), ['b']);
   });
 
-  it('non clicca se il selettore punta a un elemento in un altro punto', async () => {
+  it('does not click when the selector points to an element elsewhere', async () => {
     const page = await browser.open({ '/': COUNTER });
     const a = await target(page, 'A');
     const b = await target(page, 'B');
-    // selettore di A ma rettangolo di B: deve vincere la geometria
+    // A's selector but B's rectangle: geometry must win
     assert.equal(await executor().execute(page, click({ ...b, selector: a.selector })), true);
     assert.deepEqual(await clicks(page), ['b']);
   });
 
-  it("restituisce false se l'elemento non c'è più", async () => {
+  it('returns false when the element is gone', async () => {
     const page = await browser.open({ '/': COUNTER });
     const b = await target(page, 'B');
     await page.evaluate(() => document.querySelectorAll('button')[1].remove());
     assert.equal(await executor().execute(page, click(b)), false);
   });
 
-  it("restituisce false se l'elemento è coperto", async () => {
+  it('returns false when the element is covered', async () => {
     const page = await browser.open({ '/': COUNTER });
     const b = await target(page, 'B');
     await page.evaluate(() => document.body.insertAdjacentHTML('beforeend',
@@ -64,21 +64,21 @@ describe('ActionExecutor', () => {
     assert.deepEqual(await clicks(page), []);
   });
 
-  it('raggiunge elementi fuori viewport', async () => {
+  it('reaches elements outside the viewport', async () => {
     const page = await browser.open({ '/': `<script>window.clicks = []</script>
       <div style="height:3000px"></div><button onclick="clicks.push('giu')">Giu</button>` });
     assert.equal(await executor().execute(page, click(await target(page, 'Giu'))), true);
     assert.deepEqual(await clicks(page), ['giu']);
   });
 
-  it('chiude automaticamente alert e confirm', async () => {
+  it('automatically dismisses alert and confirm', async () => {
     const page = await browser.open({ '/': `
       <button onclick="alert('ciao'); document.title = confirm('sicuro?') ? 'si' : 'no'">Dialog</button>` });
     assert.equal(await executor().execute(page, click(await target(page, 'Dialog'))), true);
     await page.waitForFunction(() => document.title === 'no', null, { timeout: 2000 });
   });
 
-  it('blocca la navigazione verso altri domini restando sulla pagina', async () => {
+  it('blocks navigation to other domains, staying on the page', async () => {
     const page = await browser.open({ '/': '<a href="https://other.test/">Esterno</a><p>casa</p>' });
     assert.equal(await executor().execute(page, click(await target(page, 'Esterno'))), true);
     await page.waitForTimeout(300);
@@ -86,13 +86,13 @@ describe('ActionExecutor', () => {
     assert.equal(await page.textContent('p'), 'casa');
   });
 
-  it('lascia passare la navigazione interna al dominio', async () => {
+  it('lets same-domain navigation through', async () => {
     const page = await browser.open({ '/': '<a href="/due">Vai</a>', '/due': '<p>due</p>' });
     assert.equal(await executor().execute(page, click(await target(page, 'Vai'))), true);
     await page.waitForURL(`${APP_ORIGIN}/due`);
   });
 
-  it('chiude le nuove tab', async () => {
+  it('closes new tabs', async () => {
     const page = await browser.open({ '/': '<a href="/x" target="_blank">Tab</a>', '/x': 'x' });
     assert.equal(await executor().execute(page, click(await target(page, 'Tab'))), true);
     await page.waitForTimeout(500);

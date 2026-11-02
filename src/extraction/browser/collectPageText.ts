@@ -1,8 +1,8 @@
-// Eseguita nel browser con evaluateInPage: niente import, tutto qui dentro.
+// Runs in the browser via evaluateInPage: no imports, everything lives in here.
 
 export interface PageTextOptions { maxBlocks: number; maxBlockLength: number }
 
-/** Blocchi di testo visibili, in ordine di documento e senza duplicati. */
+/** Visible text blocks, in document order and without duplicates. */
 export function collectPageText(opts: PageTextOptions): string[] {
   const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'SVG']);
   const visibility = new Map<Element, boolean>();

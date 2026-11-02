@@ -3,15 +3,15 @@ import { shortHash } from '../core/hash';
 import { normalizeText } from '../core/text';
 
 export interface FingerprintOptions {
-  /** Include pathname e hash dell'URL: due route con lo stesso layout restano stati distinti. */
+  /** Includes the URL pathname and hash: two routes with the same layout remain distinct states. */
   includeUrl: boolean;
-  /** Include i testi visibili normalizzati: stesso layout con contenuti diversi = stati diversi. */
+  /** Includes the normalized visible texts: same layout with different contents = different states. */
   includePageText: boolean;
 }
 
 /**
- * Lo stato è l'insieme ordinato degli id dei cliccabili, eventualmente con URL e testi.
- * Gli insiemi sono ordinati, quindi l'ordine nel DOM non conta.
+ * The state is the sorted set of the clickables' ids, optionally with URL and texts.
+ * The sets are sorted, so DOM order does not matter.
  */
 export class StateFingerprinter implements IStateFingerprinter {
   constructor(private opts: FingerprintOptions) {}

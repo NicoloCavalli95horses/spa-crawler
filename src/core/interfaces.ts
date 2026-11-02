@@ -7,10 +7,10 @@ export interface IStabilityWaiter { waitForStable(page: Page): Promise<void> }
 export interface IActionExecutor { execute(page: Page, a: Action): Promise<boolean> }
 
 export interface FingerprintInput { url: string; clickables: ElementDescriptor[]; texts: string[] }
-/** Funzione pura: stessi dati, stesso hash. Nessun accesso al browser. */
+/** Pure function: same data, same hash. No browser access. */
 export interface IStateFingerprinter { fingerprint(input: FingerprintInput): string }
 
-/** Estrae cliccabili e testi e calcola l'id: l'unico modo in cui il motore "guarda" la pagina. */
+/** Extracts clickables and texts and computes the id: the only way the engine "looks" at the page. */
 export interface IStateCapturer { capture(page: Page): Promise<Snapshot> }
 
 export interface IStateNavigator { restore(page: Page, s: UIState): Promise<boolean> }
@@ -28,18 +28,18 @@ export interface IStateGraph {
   persist(): Promise<void>;
 }
 
-/** Dove finiscono i risultati. In produzione Crawlee, nei test un sink in memoria. */
+/** Where results end up. In production Crawlee, in tests an in-memory sink. */
 export interface IOutputSink {
   saveState(record: StateRecord): Promise<void>;
-  /** Restituisce la chiave effettiva con cui il file è stato salvato. */
+  /** Returns the actual key under which the file was saved. */
   saveFile(key: string, data: Buffer, contentType: string): Promise<string>;
   saveJson(key: string, value: unknown): Promise<void>;
 }
 
-/** Punti in cui codice esterno (es. un'estensione del browser) osserva l'esplorazione. */
+/** Points where external code (e.g. a browser extension) observes the exploration. */
 export interface IExplorationHooks {
-  /** Prima della cattura dello stato iniziale. */
+  /** Before the initial state is captured. */
   onStart(page: Page): Promise<void>;
-  /** Dopo l'ultimo stato, anche se l'esplorazione è stata interrotta da un errore. */
+  /** After the last state, even if the exploration was interrupted by an error. */
   onEnd(page: Page): Promise<void>;
 }

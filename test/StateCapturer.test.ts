@@ -6,7 +6,7 @@ import type { FingerprintInput } from '../src/core/interfaces';
 import { descriptor } from './helpers/fakes';
 
 describe('StateCapturer', () => {
-  it('unisce cliccabili, testi e URL e ne calcola l\'id', async () => {
+  it('combines clickables, texts and URL and computes the id', async () => {
     const clickables = [descriptor('a')];
     const texts = ['Ciao'];
     let received: FingerprintInput | undefined;

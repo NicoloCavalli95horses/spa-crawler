@@ -9,18 +9,18 @@ export class ActionExecutor implements IActionExecutor {
   private guardedPages = new WeakSet<Page>();
 
   constructor(
-    private allowedOrigin: string,   // blocca la navigazione fuori dominio
+    private allowedOrigin: string,   // blocks off-domain navigation
     private timeoutMs: number,
-    private tolerancePx: number,     // scarto ammesso tra rettangolo salvato e attuale
+    private tolerancePx: number,     // allowed deviation between the saved and the current rectangle
   ) {}
 
-  /** Non lancia mai: qualunque problema diventa false e il motore passa oltre. */
+  /** Never throws: any problem becomes false and the engine moves on. */
   async execute(page: Page, action: Action): Promise<boolean> {
     try {
       await this.installGuards(page);
       return await withTimeout(this.click(page, action), this.timeoutMs);
     } catch (err) {
-      log.debug(`Azione su "${action.target.text ?? action.target.selector}" fallita: ${(err as Error).message}`);
+      log.debug(`Action on "${action.target.text ?? action.target.selector}" failed: ${(err as Error).message}`);
       return false;
     }
   }
@@ -31,20 +31,20 @@ export class ActionExecutor implements IActionExecutor {
       selector: t.selector, tag: t.tag, rect: t.rect, fixed: t.fixed, tolerancePx: this.tolerancePx,
     });
     if (!point) return false;
-    // click alle coordinate: stessa semantica dell'hit-test usato in estrazione
+    // click at coordinates: same semantics as the hit-test used during extraction
     await page.mouse.click(point.x, point.y);
     return true;
   }
 
-  /** Installate una volta per pagina. */
+  /** Installed once per page. */
   private async installGuards(page: Page): Promise<void> {
     if (!this.guardedPages.has(page)) {
       this.guardedPages.add(page);
 
-      // alert/confirm/prompt bloccano la pagina finché qualcuno non li chiude
+      // alert/confirm/prompt block the page until someone dismisses them
       page.on('dialog', (d) => { d.dismiss().catch(() => {}); });
 
-      // link target=_blank e window.open: si chiudono solo le tab aperte da questa pagina
+      // target=_blank links and window.open: only tabs opened by this page are closed
       page.on('popup', (p) => { p.close().catch(() => {}); });
 
       await this.blockExternalNavigation(page);
@@ -52,24 +52,24 @@ export class ActionExecutor implements IActionExecutor {
   }
 
   /**
-   * Intercetta solo i documenti, via CDP. Con page.route Playwright spegne la cache HTTP e
-   * ogni ripristino riscaricherebbe tutte le risorse del sito: così restano in cache.
+   * Intercepts documents only, via CDP. With page.route Playwright disables the HTTP cache and
+   * every restore would re-download all the site's resources: this way they stay cached.
    */
   private async blockExternalNavigation(page: Page): Promise<void> {
     const cdp = await page.context().newCDPSession(page);
-    // l'id del frame principale resta lo stesso tra le navigazioni; chiederlo con la richiesta in pausa blocca la pagina
+    // the main frame id stays the same across navigations; asking for it while a request is paused blocks the page
     const mainFrameId = (await cdp.send('Page.getFrameTree')).frameTree.frame.id;
     cdp.on('Fetch.requestPaused', async (e) => {
       try {
         if (e.frameId === mainFrameId && new URL(e.request.url).origin !== this.allowedOrigin) {
-          log.debug(`Navigazione esterna bloccata: ${e.request.url}`);
-          // con un 204 il browser resta sulla pagina corrente; failRequest mostrerebbe la pagina d'errore
+          log.debug(`External navigation blocked: ${e.request.url}`);
+          // with a 204 the browser stays on the current page; failRequest would show the error page
           await cdp.send('Fetch.fulfillRequest', { requestId: e.requestId, responseCode: 204 });
         } else {
           await cdp.send('Fetch.continueRequest', { requestId: e.requestId });
         }
       } catch {
-        // pagina chiusa nel frattempo
+        // page closed in the meantime
       }
     });
     await cdp.send('Fetch.enable', { patterns: [{ resourceType: 'Document' }] });
@@ -79,7 +79,7 @@ export class ActionExecutor implements IActionExecutor {
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timeout di ${ms}ms`)), ms);
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

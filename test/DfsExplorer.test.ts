@@ -7,7 +7,7 @@ import { StateGraph } from '../src/state/StateGraph';
 import type { IStateCapturer } from '../src/core/interfaces';
 import { FakeApp, FakeTabs, MemoryOutput, noWait } from './helpers/fakes';
 
-/** Motore reale (navigatore, store, grafo) su un'app simulata. */
+/** Real engine (navigator, store, graph) on a simulated app. */
 function run(app: FakeApp, limits: Partial<ExplorationLimits> = {}, capturer?: IStateCapturer) {
   const out = new MemoryOutput();
   const cap = capturer ?? app.capturer();
@@ -22,7 +22,7 @@ function run(app: FakeApp, limits: Partial<ExplorationLimits> = {}, capturer?: I
 }
 
 describe('DfsExplorer', () => {
-  it('visita tutti gli stati raggiungibili, anche con cicli', async () => {
+  it('visits all reachable states, even with cycles', async () => {
     const app = new FakeApp({
       S0: { a: 'S1', b: 'S2' },
       S1: { back: 'S0', c: 'S3' },
@@ -35,14 +35,14 @@ describe('DfsExplorer', () => {
     assert.equal(r.graph.edgeCount(), 6);
   });
 
-  it('salva gli stati alla profondità massima ma non li espande', async () => {
+  it('saves states at the maximum depth but does not expand them', async () => {
     const app = new FakeApp({ S0: { a: 'S1' }, S1: { b: 'S2' }, S2: { c: 'S3' }, S3: {} });
     const r = run(app, { maxDepth: 2 });
     await r.explore();
     assert.deepEqual(r.saved(), ['S0', 'S1', 'S2']);
   });
 
-  it('registra profondità e percorso di ogni stato', async () => {
+  it('records depth and path of every state', async () => {
     const app = new FakeApp({ S0: { a: 'S1' }, S1: { b: 'S2' }, S2: {} });
     const r = run(app);
     await r.explore();
@@ -51,7 +51,7 @@ describe('DfsExplorer', () => {
     assert.deepEqual(s2.path.map((p) => p.targetId), ['a', 'b']);
   });
 
-  it('dopo la profondità massima torna allo stato di partenza e prova il cliccabile successivo', async () => {
+  it('after the maximum depth goes back to the starting state and tries the next clickable', async () => {
     const app = new FakeApp({ S0: { a: 'S1', b: 'S2' }, S1: { c: 'S3' }, S2: {}, S3: {} });
     const r = run(app, { maxDepth: 1 });
     await r.explore();
@@ -59,7 +59,7 @@ describe('DfsExplorer', () => {
     assert.deepEqual(r.saved(), ['S0', 'S1', 'S2']);
   });
 
-  it('non riespande uno stato già visto', async () => {
+  it('does not re-expand an already seen state', async () => {
     const app = new FakeApp({ S0: { a: 'S1', b: 'S1' }, S1: { c: 'S2' }, S2: {} });
     const r = run(app);
     await r.explore();
@@ -67,28 +67,28 @@ describe('DfsExplorer', () => {
     assert.equal(r.graph.edgeCount(), 3);   // S0-a->S1, S0-b->S1, S1-c->S2
   });
 
-  it('si ferma al numero massimo di stati', async () => {
+  it('stops at the maximum number of states', async () => {
     const app = new FakeApp({ S0: { a: 'S1', b: 'S2', c: 'S3' }, S1: {}, S2: {}, S3: {} });
     const r = run(app, { maxStates: 2 });
     await r.explore();
     assert.equal(r.out.states.length, 2);
   });
 
-  it('si ferma quando il budget di tempo è esaurito', async () => {
+  it('stops when the time budget is exhausted', async () => {
     const app = new FakeApp({ S0: { a: 'S1', b: 'S2' }, S1: {}, S2: {} });
     const r = run(app, { maxDurationSecs: 0 });
     await r.explore();
     assert.deepEqual(r.saved(), ['S0']);
   });
 
-  it('un errore su un elemento non interrompe gli altri', async () => {
+  it('an error on one element does not stop the others', async () => {
     const app = new FakeApp({ S0: { a: 'THROW', b: 'S1' }, S1: {} });
     const r = run(app);
     await r.explore();
     assert.deepEqual(r.saved(), ['S0', 'S1']);
   });
 
-  it('salva il grafo anche se l\'esplorazione fallisce', async () => {
+  it('saves the graph even if the exploration fails', async () => {
     const app = new FakeApp({ S0: {} });
     const broken: IStateCapturer = { capture: async () => { throw new Error('pagina rotta'); } };
     const r = run(app, {}, broken);
@@ -96,7 +96,7 @@ describe('DfsExplorer', () => {
     assert.ok(r.out.json.has('state-graph'));
   });
 
-  describe('più tab', () => {
+  describe('multiple tabs', () => {
     const GRAPH = {
       S0: { a: 'S1', b: 'S2', c: 'S3' },
       S1: { d: 'S4', e: 'S5' },
@@ -117,7 +117,7 @@ describe('DfsExplorer', () => {
       return { out, explore: () => explorer.explore(first, rest) };
     }
 
-    it('trovano gli stessi stati di una tab sola, senza salvarne due volte', async () => {
+    it('find the same states as a single tab, without saving any twice', async () => {
       const tabs = new FakeTabs(GRAPH, 3);
       const r = runTabs(tabs);
       await r.explore();
@@ -125,30 +125,30 @@ describe('DfsExplorer', () => {
       assert.deepEqual(ids, ['S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7']);
     });
 
-    it('si dividono il lavoro', async () => {
+    it('split the work', async () => {
       const tabs = new FakeTabs(GRAPH, 3);
       await runTabs(tabs).explore();
       const clicks = tabs.clicks;
       assert.ok(clicks.length > 0);
-      assert.ok([0, 1, 2].filter((i) => tabs.clicksOf(i).length > 0).length >= 2, 'il lavoro deve dividersi tra le tab');
+      assert.ok([0, 1, 2].filter((i) => tabs.clicksOf(i).length > 0).length >= 2, 'work must be split across the tabs');
     });
 
-    it('maxStates vale per ciascuna tab', async () => {
+    it('maxStates applies to each tab', async () => {
       const tabs = new FakeTabs(GRAPH, 2);
       const r = runTabs(tabs, { maxStates: 2 });
       await r.explore();
-      assert.ok(r.out.states.length <= 4, `salvati ${r.out.states.length}`);
-      assert.ok(r.out.states.length > 2, 'con due tab si va oltre il tetto di una sola');
+      assert.ok(r.out.states.length <= 4, `saved ${r.out.states.length}`);
+      assert.ok(r.out.states.length > 2, 'with two tabs we go past the cap of a single one');
     });
 
-    it('rispettano la profondità massima', async () => {
+    it('respect the maximum depth', async () => {
       const tabs = new FakeTabs(GRAPH, 3);
       const r = runTabs(tabs, { maxDepth: 1 });
       await r.explore();
       assert.deepEqual(r.out.states.map((s) => s.id).sort(), ['S0', 'S1', 'S2', 'S3']);
     });
 
-    it('terminano anche quando ci sono più tab che lavoro', async () => {
+    it('terminate even when there are more tabs than work', async () => {
       const tabs = new FakeTabs({ S0: { a: 'S1' }, S1: {} }, 5);
       const r = runTabs(tabs);
       await r.explore();

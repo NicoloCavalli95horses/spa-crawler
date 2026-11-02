@@ -1,50 +1,50 @@
 export interface ExtensionCall {
-  fn: string;                    // nome su window, es. '__RAPIDOR__getData'
-  when: 'start' | 'end';         // start: prima dell'esplorazione; end: dopo l'ultimo stato
-  args?: unknown[];              // argomenti, serializzabili in JSON
+  fn: string;                    // name on window, e.g. '__RAPIDOR__getData'
+  when: 'start' | 'end';         // start: before the exploration; end: after the last state
+  args?: unknown[];              // arguments, JSON-serializable
 }
 
 export interface ExtensionConfig {
-  path: string;                  // cartella dell'estensione (quella con manifest.json), non pacchettizzata
+  path: string;                  // extension folder (the one with manifest.json), unpacked
   calls: ExtensionCall[];
 }
 
 export interface AuthConfig {
-  bearerToken?: string;                  // diventa `Authorization: Bearer <token>`
-  headers?: Record<string, string>;      // header aggiuntivi (hanno la precedenza su bearerToken)
-  cookies?: Record<string, string>;      // cookie di sessione, impostati sul dominio del sito
+  bearerToken?: string;                  // becomes `Authorization: Bearer <token>`
+  headers?: Record<string, string>;      // extra headers (take precedence over bearerToken)
+  cookies?: Record<string, string>;      // session cookies, set on the site's domain
 }
 
 export interface CrawlConfig {
   startUrl: string;
   maxDepth: number;
-  maxStates: number;            // tetto agli stati salvati da ciascuna tab: garantisce la terminazione
-  maxDurationSecs: number;      // budget di tempo per sito: poi l'esplorazione si chiude da sola
-  concurrency: number;          // siti esplorati in parallelo
-  tabsPerSite: number;          // tab che esplorano insieme lo stesso sito (stesso contesto: cookie e storage condivisi)
-  restoreDelayMs: number;       // distanza minima tra due ricaricamenti dello stesso sito (tutte le tab insieme)
-  viewport: { width: number; height: number };  // fisso: i rettangoli dipendono dalla viewport
+  maxStates: number;            // cap on the states saved by each tab: guarantees termination
+  maxDurationSecs: number;      // time budget per site: then the exploration shuts down on its own
+  concurrency: number;          // sites explored in parallel
+  tabsPerSite: number;          // tabs exploring the same site together (same context: shared cookies and storage)
+  restoreDelayMs: number;       // minimum gap between two reloads of the same site (all tabs together)
+  viewport: { width: number; height: number };  // fixed: rectangles depend on the viewport
   stability: { quietMs: number; timeoutMs: number; longRequestMs: number };
-  rectGridPx: number;           // arrotondamento dei rettangoli nel fingerprint
+  rectGridPx: number;           // rectangle rounding in the fingerprint
   includeUrlInFingerprint: boolean;
   text: {
-    inElementId: boolean;         // testo del cliccabile nel suo id
-    inStateFingerprint: boolean;  // testi visibili della pagina nel fingerprint dello stato
+    inElementId: boolean;         // clickable's text in its id
+    inStateFingerprint: boolean;  // visible page texts in the state fingerprint
     maxBlocks: number;
     maxBlockLength: number;
   };
   actionTimeoutMs: number;
-  screenshots: boolean;         // salva un'immagine PNG di ogni stato (solo per debug visivo)
-  headless: boolean;            // false: apre una finestra del browser per vedere il crawler in azione
-  locale: string;               // lingua chiesta ai siti: tiene coerenti testi e blocklist
-  blocklist: string[];          // testi da non cliccare (es. logout)
-  extension?: ExtensionConfig;  // estensione Chrome da caricare (opzionale)
-  auth?: AuthConfig;            // credenziali inviate a ogni richiesta verso il sito esplorato (opzionale)
-  debugNoCrawling: boolean;     // apre il browser sull'URL e aspetta che lo chiuda l'utente, senza esplorare (login a mano)
-  userDataDir?: string;        // profilo persistente del browser (opzionale): cookie e storage sopravvivono tra le esecuzioni
+  screenshots: boolean;         // saves a PNG image of each state (visual debugging only)
+  headless: boolean;            // false: opens a browser window to watch the crawler in action
+  locale: string;               // language requested from sites: keeps texts and blocklist consistent
+  blocklist: string[];          // texts not to click (e.g. logout)
+  extension?: ExtensionConfig;  // Chrome extension to load (optional)
+  auth?: AuthConfig;            // credentials sent with every request to the explored site (optional)
+  debugNoCrawling: boolean;     // opens the browser on the URL and waits for the user to close it, without exploring (manual login)
+  userDataDir?: string;        // persistent browser profile (optional): cookies and storage survive across runs
 }
 
-/** "a=1; b=2" -> { a: '1', b: '2' } (formato dell'header Cookie copiato dai DevTools). */
+/** "a=1; b=2" -> { a: '1', b: '2' } (format of the Cookie header copied from DevTools). */
 function parseCookies(raw: string): Record<string, string> {
   return Object.fromEntries(raw.split(';').map((p) => p.trim()).filter(Boolean).map((p) => {
     const i = p.indexOf('=');
@@ -62,42 +62,42 @@ const auth: AuthConfig | undefined =
     : undefined;
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
-  // serve il protocollo, altrimenti Crawlee scarta l'URL
-  startUrl: process.env.START_URL ?? 'https://example.com',
-  maxDepth: 3,
+  // the protocol is required, otherwise Crawlee discards the URL
+  startUrl: process.env.START_URL ?? 'https://learn.pimsleur.com/MiniLearn',
+  maxDepth: 1,
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
-  tabsPerSite: 1,
+  tabsPerSite: 3,
   restoreDelayMs: 150,
   viewport: { width: 1280, height: 800 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
   rectGridPx: 4,
   includeUrlInFingerprint: true,
-  // i testi sono normalizzati (cifre -> '#'); su pagine con contenuti casuali
-  // (consigli, caroselli) conviene disattivare inStateFingerprint
+  // texts are normalized (digits -> '#'); on pages with random content
+  // (recommendations, carousels) it is better to disable inStateFingerprint
   text: { inElementId: true, inStateFingerprint: true, maxBlocks: 2000, maxBlockLength: 200 },
   actionTimeoutMs: 5_000,
-  // immagini PNG degli stati: non servono all'esplorazione, solo a ispezionarla a occhio
+  // PNG images of the states: not needed by the exploration, only to inspect it by eye
   screenshots: false,
-  // HEADLESS=false npm start per vedere il browser
+  // HEADLESS=false npm start to see the browser
   headless: process.env.HEADLESS !== 'false',
-  // locale del browser e header Accept-Language: i siti multilingua rispondono in inglese
+  // browser locale and Accept-Language header: multilingual sites respond in English
   locale: 'en-US',
-  // confronto per sottostringa, senza distinzione di maiuscole, su testo, aria-label e href
+  // case-insensitive substring match on text, aria-label and href
   blocklist: ['logout', 'log out', 'sign out', 'quit'],
-  // estensione Chrome: i risultati delle chiamate finiscono nel KeyValueStore come
-  // `<sito>--extension-<when>-<fn>`. Le funzioni devono stare nel mondo MAIN della pagina
-  // (content script con "world": "MAIN" nel manifest), altrimenti window non le vede.
-  // autenticazione, solo da variabili d'ambiente per non committare segreti:
+  // Chrome extension: call results end up in the KeyValueStore as
+  // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world
+  // (content script with "world": "MAIN" in the manifest), otherwise window cannot see them.
+  // authentication, from environment variables only so that secrets are never committed:
   //   AUTH_BEARER=<token>  AUTH_COOKIES='sid=abc; lang=it'  AUTH_HEADERS='{"X-Api-Key":"k"}'
   auth,
-  // profilo persistente: USER_DATA_DIR=/percorso/profilo npm start. Non puntare al profilo
-  // di Chrome in uso (bloccato, e Chrome 136+ vieta l'automazione su quella cartella):
-  // usa una cartella dedicata, o una copia del profilo. Richiede concurrency: 1.
+  // persistent profile: USER_DATA_DIR=/path/to/profile npm start. Do not point to the Chrome
+  // profile in use (it is locked, and Chrome 136+ forbids automation on that folder):
+  // use a dedicated folder, or a copy of the profile. Requires concurrency: 1.
   userDataDir: process.env.USER_DATA_DIR,
-  // DEBUG_NO_CRAWLING=true: nessuna esplorazione, il browser resta aperto finché non lo chiudi
-  // (per fare il login a mano nel profilo persistente; usare con HEADLESS=false)
+  // DEBUG_NO_CRAWLING=true: no exploration, the browser stays open until you close it
+  // (to log in manually into the persistent profile; use with HEADLESS=false)
   debugNoCrawling: process.env.DEBUG_NO_CRAWLING === 'true',
   extension: {
     path: '../rapidor/packages/react-devtools-extensions/chrome/build/unpacked',

@@ -16,14 +16,14 @@ function setup(app: FakeApp) {
 const APP = { S0: { a: 'S1' }, S1: { b: 'S2', c: 'S3' }, S2: {}, S3: {} };
 
 describe('StateNavigator', () => {
-  it('non ricarica se si trova già nello stato richiesto', async () => {
+  it('does not reload when already in the requested state', async () => {
     const app = new FakeApp(APP);
     app.current = 'S2';
     assert.equal(await setup(app).restore(app.page(), target('S2', ['a', 'b'])), true);
     assert.equal(app.gotoCount, 0);
   });
 
-  it('altrimenti ricarica e ripete il percorso in ordine', async () => {
+  it('otherwise reloads and replays the path in order', async () => {
     const app = new FakeApp(APP);
     app.current = 'S3';
     assert.equal(await setup(app).restore(app.page(), target('S2', ['a', 'b'])), true);
@@ -32,20 +32,20 @@ describe('StateNavigator', () => {
     assert.equal(app.current, 'S2');
   });
 
-  it('per la radice basta il ricaricamento', async () => {
+  it('for the root a reload is enough', async () => {
     const app = new FakeApp(APP);
     app.current = 'S1';
     assert.equal(await setup(app).restore(app.page(), target('S0', [])), true);
     assert.deepEqual(app.clicks, []);
   });
 
-  it("restituisce false se un'azione del percorso fallisce", async () => {
+  it('returns false when an action on the path fails', async () => {
     const app = new FakeApp(APP);
     app.current = 'S3';
     assert.equal(await setup(app).restore(app.page(), target('S2', ['a', 'manca'])), false);
   });
 
-  it('restituisce false se dopo il replay lo stato è diverso (UI non deterministica)', async () => {
+  it('returns false when the state differs after the replay (non-deterministic UI)', async () => {
     const app = new FakeApp(APP);
     app.current = 'S3';
     assert.equal(await setup(app).restore(app.page(), target('S9', ['a', 'b'])), false);

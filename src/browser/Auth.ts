@@ -1,7 +1,7 @@
 import type { BrowserContext } from 'playwright';
 import type { AuthConfig } from '../config';
 
-/** Header da inviare: bearerToken diventa Authorization, `headers` ha la precedenza. */
+/** Headers to send: bearerToken becomes Authorization, `headers` takes precedence. */
 export function authHeaders(auth: AuthConfig): Record<string, string> {
   return {
     ...(auth.bearerToken ? { Authorization: `Bearer ${auth.bearerToken}` } : {}),
@@ -9,7 +9,7 @@ export function authHeaders(auth: AuthConfig): Record<string, string> {
   };
 }
 
-/** Il sito esplorato e i suoi sottodomini: le credenziali non devono arrivare a terze parti. */
+/** The explored site and its subdomains: credentials must never reach third parties. */
 export function isSameSite(requestUrl: string, siteUrl: string): boolean {
   const host = new URL(requestUrl).hostname;
   const site = new URL(siteUrl).hostname.replace(/^www\./, '');
@@ -17,9 +17,9 @@ export function isSameSite(requestUrl: string, siteUrl: string): boolean {
 }
 
 /**
- * Imposta cookie e header di autenticazione sul contesto del browser.
- * Gli header partono con ogni richiesta (navigazioni, fetch, XHR, risorse) verso il sito
- * esplorato; le richieste verso altri domini restano senza credenziali.
+ * Sets authentication cookies and headers on the browser context.
+ * Headers go out with every request (navigations, fetch, XHR, resources) to the explored
+ * site; requests to other domains stay without credentials.
  */
 export async function applyAuth(context: BrowserContext, auth: AuthConfig, siteUrl: string): Promise<void> {
   if (auth.cookies) {

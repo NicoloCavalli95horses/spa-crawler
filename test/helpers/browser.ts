@@ -5,8 +5,8 @@ export const APP_ORIGIN = 'https://app.test';
 export const VIEWPORT = { width: 1280, height: 800 };
 
 /**
- * Registra before/after sul file di test: un browser per file, un contesto nuovo per pagina.
- * `open(pages)` serve le pagine HTML su https://app.test senza un server vero.
+ * Registers before/after on the test file: one browser per file, a new context per page.
+ * `open(pages)` serves the HTML pages on https://app.test without a real server.
  */
 export function useBrowser() {
   let browser: Browser;
@@ -22,14 +22,14 @@ export function useBrowser() {
     return context.newPage();
   }
 
-  /** Pagina con il solo HTML dato (origine about:blank). */
+  /** Page with only the given HTML (origin about:blank). */
   async function withHtml(html: string): Promise<Page> {
     const page = await newPage();
     await page.setContent(html);
     return page;
   }
 
-  /** Pagine servite su APP_ORIGIN; si apre la prima (o `start`). */
+  /** Pages served on APP_ORIGIN; opens the first one (or `start`). */
   async function open(pages: Record<string, string>, start?: string): Promise<Page> {
     const page = await newPage();
     await page.route(`${APP_ORIGIN}/**`, (route) => {

@@ -14,13 +14,13 @@ before(async () => { root = await mkdtemp(join(tmpdir(), 'crawler-test-')); });
 after(async () => { await rm(root, { recursive: true, force: true }); });
 
 describe('FileOutput', () => {
-  it('crea la cartella <sito>_<timestamp>', () => {
+  it('creates the <site>_<timestamp> folder', () => {
     const out = new FileOutput('a.test', root, new Date('2026-10-30T12:16:20.701Z'));
     assert.equal(out.dir, join(root, 'a.test_2026-10-30T12-16-20'));
     assert.equal(folderTimestamp(new Date('2026-01-02T03:04:05Z')), '2026-01-02T03-04-05');
   });
 
-  it('states.json resta un array JSON valido dopo ogni stato', async () => {
+  it('states.json stays a valid JSON array after each state', async () => {
     const out = new FileOutput('a.test', root, new Date('2026-10-30T10:00:00Z'));
     for (const id of ['s0', 's1', 's2']) {
       await out.saveState(record(id));
@@ -30,13 +30,13 @@ describe('FileOutput', () => {
     assert.deepEqual(JSON.parse(await readFile(join(out.dir, 'states.json'), 'utf8')).map((s: StateRecord) => s.id), ['s0', 's1', 's2']);
   });
 
-  it('scritture concorrenti non si mescolano', async () => {
+  it('concurrent writes do not interleave', async () => {
     const out = new FileOutput('b.test', root, new Date('2026-10-30T10:00:00Z'));
     await Promise.all(['x', 'y', 'z', 'w'].map((id) => out.saveState(record(id))));
     assert.equal(JSON.parse(await readFile(join(out.dir, 'states.json'), 'utf8')).length, 4);
   });
 
-  it('saveJson riscrive il file e non lascia temporanei', async () => {
+  it('saveJson rewrites the file and leaves no temporary files', async () => {
     const out = new FileOutput('c.test', root, new Date('2026-10-30T10:00:00Z'));
     await out.saveJson('state-graph', { edges: [1] });
     await out.saveJson('state-graph', { edges: [1, 2] });
@@ -51,18 +51,18 @@ describe('aggregate', () => {
     assert.equal(parseFolder('_stats.json'), undefined);
   });
 
-  it('medie: stati e archi su tutti i siti, IDOR solo su quelli con estensione', () => {
+  it('averages: states and edges over all sites, IDOR only over those with the extension', () => {
     const base = { folder: '', startedAt: '' };
     const agg = aggregate([
       { ...base, site: 'a', states: 10, edges: 20, potentialIdor: 2 },
-      { ...base, site: 'b', states: 20, edges: 40, potentialIdor: null },   // ancora in corso
+      { ...base, site: 'b', states: 20, edges: 40, potentialIdor: null },   // still running
     ]);
     assert.deepEqual(agg.averages, { states: 15, edges: 30, potentialIdor: 2 });
     assert.equal(agg.sitesWithExtension, 1);
     assert.deepEqual(aggregate([]).averages, { states: null, edges: null, potentialIdor: null });
   });
 
-  it('collect legge cartelle in corso e complete', async () => {
+  it('collect reads both running and completed folders', async () => {
     const dir = join(root, 'sites');
     const done = new FileOutput('done.test', dir, new Date('2026-10-30T10:00:00Z'));
     await done.saveState(record('s0'));
@@ -71,7 +71,7 @@ describe('aggregate', () => {
     await done.saveJson('extension-end-__RAPIDOR__getData', { logs: [], stats: { 'Potential IDOR reported': 4 } });
     const running = new FileOutput('run.test', dir, new Date('2026-10-30T10:00:01Z'));
     await running.saveState(record('s0'));
-    await mkdir(join(dir, 'altro'));   // cartelle estranee ignorate
+    await mkdir(join(dir, 'altro'));   // unrelated folders are ignored
     await writeFile(join(dir, '_stats.json'), '{}');
 
     const agg = await collect(dir);

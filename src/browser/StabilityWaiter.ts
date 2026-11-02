@@ -4,15 +4,15 @@ import type { IStabilityWaiter } from '../core/interfaces';
 import { evaluateInPage } from './evaluateInPage';
 
 export interface StabilityOptions {
-  quietMs: number;        // silenzio richiesto su DOM e rete
-  timeoutMs: number;      // tetto massimo: oltre si prosegue comunque
-  longRequestMs: number;  // richieste aperte da più di così (long-poll, streaming) vengono ignorate
+  quietMs: number;        // silence required on DOM and network
+  timeoutMs: number;      // hard cap: past it we move on anyway
+  longRequestMs: number;  // requests open for longer than this (long-poll, streaming) are ignored
   pollMs: number;
 }
 
 const IGNORED_TYPES = new Set(['websocket', 'eventsource', 'media', 'manifest', 'ping']);
 
-/** Conta le richieste di rete in corso per una pagina. */
+/** Counts the in-flight network requests of a page. */
 class NetworkTracker {
   private inflight = new Map<Request, number>();
   private lastActivity = Date.now();
@@ -34,13 +34,13 @@ class NetworkTracker {
     const now = Date.now();
     for (const [req, start] of this.inflight) {
       if (now - start < longRequestMs) return false;
-      if (now - start > 60_000) this.inflight.delete(req); // evita di accumulare richieste appese
+      if (now - start > 60_000) this.inflight.delete(req); // avoids piling up hung requests
     }
     return now - this.lastActivity >= quietMs;
   }
 }
 
-/** Eseguita nel browser: installa (una volta per documento) un MutationObserver e legge lo stato. */
+/** Runs in the browser: installs (once per document) a MutationObserver and reads the state. */
 function probeDom(): { sinceMutation: number; animations: number } {
   const w = window as any;
   if (!w.__crawlerStability) {
@@ -50,7 +50,7 @@ function probeDom(): { sinceMutation: number; animations: number } {
     });
     w.__crawlerStability = state;
   }
-  // animazioni infinite (spinner, loader decorativi) non finirebbero mai: le ignoriamo
+  // infinite animations (spinners, decorative loaders) would never end: we ignore them
   const animations = document.getAnimations().filter((a) =>
     a.playState === 'running' &&
     Number.isFinite(Number(a.effect?.getComputedTiming().endTime ?? Infinity))).length;
@@ -74,10 +74,10 @@ export class StabilityWaiter implements IStabilityWaiter {
     await page.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => {});
 
     while (Date.now() < deadline) {
-      // durante una navigazione il contesto viene distrutto: si riprova al giro dopo
+      // during a navigation the context is destroyed: retry on the next round
       const dom = await evaluateInPage(page, probeDom, undefined).catch(() => null);
-      // il silenzio va contato da quando siamo stati chiamati: dopo un click il DOM può
-      // essere fermo da secondi, ma la reazione (render, fetch) non è ancora partita
+      // silence must be counted from when we were called: after a click the DOM may have
+      // been still for seconds, but the reaction (render, fetch) has not started yet
       const calm = Date.now() - start >= quietMs;
       if (calm && dom && dom.sinceMutation >= quietMs && dom.animations === 0 &&
           network.isQuiet(quietMs, longRequestMs)) {
@@ -85,7 +85,7 @@ export class StabilityWaiter implements IStabilityWaiter {
       }
       await page.waitForTimeout(pollMs);
     }
-    log.debug(`StabilityWaiter: timeout di ${timeoutMs}ms su ${page.url()}, si prosegue`);
+    log.debug(`StabilityWaiter: timed out after ${timeoutMs}ms on ${page.url()}, moving on`);
   }
 
   private trackerFor(page: Page): NetworkTracker {
