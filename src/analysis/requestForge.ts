@@ -17,9 +17,14 @@ export interface ResponseLike {
 export async function forgeRequest({ page, url, method, headers, postData }: {
   page: Page; url: string; method: string; headers?: Record<string, string>; postData?: string;
 }): Promise<ResponseLike> {
+  // HTTP/2 responses surface pseudo-headers (:authority, :method, :path, :scheme) via
+  // Playwright's allHeaders(); APIRequestContext.fetch rejects them as invalid HTTP tokens.
+  const filteredHeaders = headers
+    ? Object.fromEntries(Object.entries(headers).filter(([name]) => !name.startsWith(':')))
+    : headers;
   const res = await page.request.fetch(url, {
     method,
-    headers,
+    headers: filteredHeaders,
     data: postData,
     failOnStatusCode: false,
   });

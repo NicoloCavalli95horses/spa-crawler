@@ -57,7 +57,7 @@ export interface CrawlConfig {
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
   // the protocol is required, otherwise Crawlee discards the URL
-  startUrl: process.env.START_URL ?? 'https://learn.pimsleur.com/MiniLearn',
+  startUrl: process.env.START_URL ?? 'http://localhost:3000',
   maxDepth: 2,
   maxStates: 500,
   maxDurationSecs: 1800,

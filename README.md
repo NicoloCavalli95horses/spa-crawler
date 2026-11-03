@@ -187,7 +187,7 @@ Everything the crawler produces lives in one SQLite file, `db.path` (default `st
 * `crawl_edges` — the click graph: one row per edge (`from`, `to`, action type/target/text/selector).
 * `http_events`, `react_states`, `preindexed_values`, `vulnerabilities`, `analysis_stats`, `authz_classifications` — everything from [IDOR analysis](#idor-analysis-authzidor-detection).
 
-Crawlee's own bookkeeping (request queue, key-value store) stays separate, under `storage/{datasets,key_value_stores,request_queues}`, and is cleared at the start of each run regardless of `db.clearOnStart`.
+Crawlee's own bookkeeping (request queue, key-value store) stays separate, under `storage/{datasets,key_value_stores,request_queues}`, and is cleared at the start of each run.
 
 ## Statistics
 
@@ -195,8 +195,6 @@ Crawlee's own bookkeeping (request queue, key-value store) stays separate, under
 npm run stats                              # per-site crawl + IDOR stats, cross-site averages, flagged vulnerabilities
 npm run stats -- --db storage/other-run.db # or any other SQLite file in that shape
 ```
-
-A single pass over `storage/crawler.db` (WAL mode, so this reads fine even while a crawl is still running): states/edges per site, every [IDOR analysis](#idor-analysis-authzidor-detection) counter, the average of each across sites, and the full list of flagged vulnerabilities with their detection method and motivation.
 
 ## Tranco List
 
