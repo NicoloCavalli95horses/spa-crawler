@@ -55,7 +55,7 @@ export function buildExplorer(
   // 3. the algorithm receives everything ready-made
   const maybeHooks: (IExplorationHooks | undefined)[] = [
     cfg.extension && new ExtensionCalls(cfg.extension, output, cfg.actionTimeoutMs),
-    network && new NetworkObserverHooks(network, output),
+    network && new NetworkObserverHooks(network),
   ];
   const hooks = maybeHooks.filter((h): h is IExplorationHooks => Boolean(h));
 

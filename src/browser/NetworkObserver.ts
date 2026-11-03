@@ -1,4 +1,5 @@
 import type { Page, Request, Response } from 'playwright';
+import type { HttpEventStore } from '../db/HttpEventStore';
 
 export interface CapturedRequest {
   url: string;
@@ -23,6 +24,7 @@ export interface NetworkStats {
 export interface NetworkObserverOptions {
   origin: string;
   maxBodyBytes?: number;   // caps the saved response body; default 200KB
+  store?: HttpEventStore;  // deduplicated persistence, shared across every tab exploring this site
 }
 
 const DEFAULT_MAX_BODY_BYTES = 200_000;
@@ -33,16 +35,20 @@ const DEFAULT_MAX_BODY_BYTES = 200_000;
  * same snapshot, mirroring RAPIDOR's own cross-tab aggregation.
  */
 export class NetworkObserver {
+  private site: string;
   private baseDomain: string;
   private maxBodyBytes: number;
+  private store?: HttpEventStore;
   private requests: CapturedRequest[] = [];
   private stats: NetworkStats = {
     total: 0, byMethod: {}, byStatus: {}, failed: 0, skippedOffDomain: 0,
   };
 
-  constructor({ origin, maxBodyBytes = DEFAULT_MAX_BODY_BYTES }: NetworkObserverOptions) {
-    this.baseDomain = baseDomain(new URL(origin).hostname);
+  constructor({ origin, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, store }: NetworkObserverOptions) {
+    this.site = new URL(origin).hostname;
+    this.baseDomain = baseDomain(this.site);
     this.maxBodyBytes = maxBodyBytes;
+    this.store = store;
   }
 
   attach(page: Page): void {
@@ -79,6 +85,7 @@ export class NetworkObserver {
     if (res) await this.fillResponse(entry, res);
 
     this.requests.push(entry);
+    this.store?.record({ site: this.site, request: entry });
     this.stats.total++;
     this.stats.byMethod[entry.method] = (this.stats.byMethod[entry.method] ?? 0) + 1;
     if (entry.status !== undefined) {

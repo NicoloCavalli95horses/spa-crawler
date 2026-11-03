@@ -6,6 +6,7 @@ import { buildExplorer } from './buildExplorer';
 import { extensionLaunchArgs } from './browser/ExtensionCalls';
 import { applyAuth } from './browser/Auth';
 import { NetworkObserver } from './browser/NetworkObserver';
+import { HttpEventStore } from './db/HttpEventStore';
 
 /** Margin beyond the exploration budget: final capture and graph saving. */
 const HANDLER_MARGIN_SECS = 120;
@@ -51,6 +52,11 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   // one NetworkObserver per request, created in preNavigationHooks (before Crawlee's own first
   // goto, so no request is missed) and read back in requestHandler to pass into buildExplorer
   const networkObservers = new WeakMap<Page, NetworkObserver>();
+  // shared by every site/tab in this run: created (and cleared, if configured) exactly once here,
+  // not per site, so concurrent sites never wipe each other's rows mid-run
+  const httpEventStore = cfg.networkObserver
+    ? new HttpEventStore({ path: cfg.db.path, clearOnStart: cfg.db.clearOnStart })
+    : undefined;
   return new PlaywrightCrawler({
     // each site has its own page (more tabs with tabsPerSite) and its own explorer: sites can run in parallel
     maxConcurrency: cfg.concurrency,
@@ -76,7 +82,7 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
         await page.setViewportSize(cfg.viewport);
         if (cfg.auth) await applyAuth(page.context(), cfg.auth, request.url);
         if (cfg.networkObserver) {
-          const observer = new NetworkObserver({ origin: new URL(request.url).origin });
+          const observer = new NetworkObserver({ origin: new URL(request.url).origin, store: httpEventStore });
           observer.attach(page);
           networkObservers.set(page, observer);
         }
