@@ -64,7 +64,7 @@ describe('ReactStateStore', () => {
     const db = newDb('e.db');
     new HttpEventStore({ db, clearOnStart: false }).record({
       site: 'a.test',
-      request: { url: 'https://a.test/api', method: 'GET', requestHeaders: {}, timestamp: '2026-11-03T00:00:00.000Z' },
+      request: { url: 'https://a.test/api', method: 'GET', pageUrl: 'https://a.test/', requestHeaders: {}, timestamp: '2026-11-03T00:00:00.000Z' },
     });
     new ReactStateStore({ db, clearOnStart: false }).record({ site: 'a.test', url: 'https://a.test/', graph: { fingerprint: 'f1' } });
     assert.equal(rowsOf(db).length, 1);

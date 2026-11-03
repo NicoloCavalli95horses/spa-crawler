@@ -6,6 +6,7 @@ import { buildExplorer } from './buildExplorer';
 import { extensionLaunchArgs } from './browser/ExtensionCalls';
 import { applyAuth } from './browser/Auth';
 import { NetworkObserver } from './browser/NetworkObserver';
+import { installParamUsageTracking } from './browser/paramUsageTracker';
 import { HttpEventStore } from './db/HttpEventStore';
 import { ReactStateStore } from './db/ReactStateStore';
 import { PreindexedValueStore } from './db/PreindexedValueStore';
@@ -101,6 +102,7 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       async ({ page, request }) => {
         await page.setViewportSize(cfg.viewport);
         if (cfg.auth) await applyAuth(page.context(), cfg.auth, request.url);
+        await installParamUsageTracking(page);
         const observer = new NetworkObserver({ origin: new URL(request.url).origin, store: httpEventStore });
         observer.attach(page);
         networkObservers.set(page, observer);
@@ -125,6 +127,7 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
         Array.from({ length: Math.max(0, cfg.tabsPerSite - 1) }, async () => {
           const p = await page.context().newPage();
           await p.setViewportSize(cfg.viewport);
+          await installParamUsageTracking(p);
           network?.attach(p);   // before any navigation happens on it: nothing is missed
           return p;
         }),

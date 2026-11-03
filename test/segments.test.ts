@@ -20,7 +20,7 @@ describe('SegmentExtractor', () => {
     const candidates = new SegmentExtractor().extract('https://a.test/api/items?id=42&active=true');
     assert.deepEqual(candidates, [
       { parts: ['https://a.test/api/', ''], value: 'items', index: 1, query: '?id=42&active=true' },
-      { parts: ['https://a.test/api/items?id='], value: '42', index: 1 },
+      { parts: ['https://a.test/api/items?id='], value: '42', index: 1, paramName: 'id' },
     ]);
   });
 

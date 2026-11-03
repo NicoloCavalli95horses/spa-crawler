@@ -29,12 +29,13 @@ console.log('\nAverage per site (where available):');
 console.table(Object.fromEntries(NUMERIC_FIELDS.map((f) => [f, fmt(mean(rows.map((r) => r[f])))])));
 
 const vulnerabilities = db.prepare(`
-  SELECT site, reference_url, candidate_url, method, motivation FROM vulnerabilities ORDER BY site ASC
-`).all() as { site: string; reference_url: string; candidate_url: string; method: string; motivation: string }[];
+  SELECT site, reference_url, candidate_url, method, motivation, detection_method FROM vulnerabilities ORDER BY site ASC
+`).all() as { site: string; reference_url: string; candidate_url: string; method: string; motivation: string; detection_method: string }[];
 
 if (vulnerabilities.length) {
   console.log(`\n${vulnerabilities.length} flagged vulnerabilit${vulnerabilities.length === 1 ? 'y' : 'ies'}:`);
   console.table(vulnerabilities.map((v) => ({
-    site: v.site, method: v.method, reference: v.reference_url, candidate: v.candidate_url, 'ratio/motivation': v.motivation,
+    site: v.site, method: v.method, reference: v.reference_url, candidate: v.candidate_url,
+    detection: v.detection_method, 'ratio/motivation': v.motivation,
   })));
 }

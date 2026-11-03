@@ -11,6 +11,8 @@ export interface CapturedRequest {
   contentType?: string;
   responseBody?: string;
   timestamp: string;
+  pageUrl: string;   // the document's URL when this request happened; lets analysis replay a purely
+                      // client-routed candidate (pushState, no real request) on the right page later
 }
 
 export interface NetworkStats {
@@ -52,13 +54,13 @@ export class NetworkObserver {
   }
 
   attach(page: Page): void {
-    page.on('requestfinished', (req) => { void this.handle(req); });
+    page.on('requestfinished', (req) => { void this.handle(req, page); });
     // Some frameworks (observed with Next.js's RSC router) read a response fully, then cancel the
     // body stream once they have what they need; Chrome reports that as a failed/aborted request
     // even though a real response (status/headers) was received. req.response() still resolves in
     // that case, so these are handled identically to a finished request; only a response-less
     // failure (DNS, connection refused, truly aborted mid-flight) counts as `stats.failed`.
-    page.on('requestfailed', (req) => { void this.handle(req); });
+    page.on('requestfailed', (req) => { void this.handle(req, page); });
   }
 
   snapshot(): { requests: CapturedRequest[]; stats: NetworkStats } {
@@ -74,7 +76,7 @@ export class NetworkObserver {
     }
   }
 
-  private async handle(req: Request): Promise<void> {
+  private async handle(req: Request, page: Page): Promise<void> {
     if (req.resourceType() !== 'fetch' && req.resourceType() !== 'xhr') return;
     if (!this.isSameSite(req.url())) { this.stats.skippedOffDomain++; return; }
 
@@ -87,6 +89,7 @@ export class NetworkObserver {
       requestHeaders: await req.allHeaders().catch(() => ({})),
       postData: truncate(req.postData() ?? undefined, this.maxBodyBytes),
       timestamp: new Date().toISOString(),
+      pageUrl: page.url(),
     };
     await this.fillResponse(entry, res);
 

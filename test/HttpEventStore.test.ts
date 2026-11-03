@@ -14,6 +14,7 @@ after(async () => { await rm(root, { recursive: true, force: true }); });
 const request = (extra: Partial<CapturedRequest> = {}): CapturedRequest => ({
   url: 'https://a.test/api/items',
   method: 'GET',
+  pageUrl: 'https://a.test/',
   requestHeaders: {},
   timestamp: '2026-11-03T00:00:00.000Z',
   ...extra,

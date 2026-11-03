@@ -15,6 +15,7 @@ export interface SegmentCandidate {
   parts: string[];   // spliceSegment inserts the replacement value at `index` and joins
   index: number;
   query?: string;     // original search string ("" or "?a=1"), re-attached after splicing a path candidate
+  paramName?: string; // set only for query-param candidates: the key, needed by the client-routing fallback
 }
 
 /** Stateful per analysis run: learns which path segment varies across a site's requests. */
@@ -99,7 +100,7 @@ export class SegmentExtractor {
     const result: SegmentCandidate[] = [];
     for (const [key, value] of searchParams) {
       if (['true', 'false', ...valuesToExclude].includes(value)) continue;
-      result.push({ parts: [`${fullPath}?${key}=`], value, index: 1 });
+      result.push({ parts: [`${fullPath}?${key}=`], value, index: 1, paramName: key });
     }
     return result;
   }

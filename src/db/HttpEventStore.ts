@@ -10,6 +10,7 @@ export interface HttpEventStoreOptions {
 export interface HttpEventRow {
   method: string;
   url: string;
+  pageUrl: string;
   status?: number;
   contentType?: string;
   requestHeaders: Record<string, string>;
@@ -35,6 +36,7 @@ export class HttpEventStore {
         fingerprint TEXT NOT NULL,
         method TEXT,
         url TEXT,
+        page_url TEXT,
         status INTEGER,
         content_type TEXT,
         request_headers TEXT,
@@ -56,10 +58,10 @@ export class HttpEventStore {
   record({ site, request }: { site: string; request: CapturedRequest }): void {
     this.db.prepare(`
       INSERT INTO http_events (
-        site, fingerprint, method, url, status, content_type,
+        site, fingerprint, method, url, page_url, status, content_type,
         request_headers, response_headers, post_data, response_body, first_seen_at
       ) VALUES (
-        @site, @fingerprint, @method, @url, @status, @contentType,
+        @site, @fingerprint, @method, @url, @pageUrl, @status, @contentType,
         @requestHeaders, @responseHeaders, @postData, @responseBody, @firstSeenAt
       )
       ON CONFLICT(site, fingerprint) DO UPDATE SET seen_count = seen_count + 1
@@ -68,6 +70,7 @@ export class HttpEventStore {
       fingerprint: fingerprintOf(request),
       method: request.method,
       url: request.url,
+      pageUrl: request.pageUrl,
       status: request.status ?? null,
       contentType: request.contentType ?? null,
       requestHeaders: JSON.stringify(request.requestHeaders),
@@ -88,12 +91,13 @@ export class HttpEventStore {
   /** All distinct events for a site, in capture order — what the analysis pipeline iterates over. */
   listBySite(site: string): HttpEventRow[] {
     const rows = this.db.prepare('SELECT * FROM http_events WHERE site = ? ORDER BY id ASC').all(site) as {
-      method: string; url: string; status: number | null; content_type: string | null;
+      method: string; url: string; page_url: string; status: number | null; content_type: string | null;
       request_headers: string | null; response_headers: string | null; post_data: string | null; response_body: string | null;
     }[];
     return rows.map((r) => ({
       method: r.method,
       url: r.url,
+      pageUrl: r.page_url,
       status: r.status ?? undefined,
       contentType: r.content_type ?? undefined,
       requestHeaders: r.request_headers ? JSON.parse(r.request_headers) : {},

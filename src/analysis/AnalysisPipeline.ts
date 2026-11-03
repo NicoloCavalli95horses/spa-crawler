@@ -6,11 +6,12 @@ import type { PreindexedValueStore } from '../db/PreindexedValueStore';
 import type { ReactStateStore } from '../db/ReactStateStore';
 import type { VulnerabilityStore } from '../db/VulnerabilityStore';
 import type { AnalysisStatsStore } from '../db/AnalysisStatsStore';
-import { SegmentExtractor, spliceSegment } from './segments';
+import { SegmentExtractor, spliceSegment, type SegmentCandidate } from './segments';
 import { findCandidates } from './matchFinder';
 import { forgeRequest, runWithConcurrency, sleep } from './requestForge';
 import { getServerResponseSimilarity, compareObj, describeDiffs } from './responseEvaluate';
 import { assessAuthZ, type AuthzClassifier } from './authzClassifier';
+import { checkClientSideRouting } from './clientRouting';
 
 export interface AnalysisPipelineOptions {
   maxConcurrentRequests: number;
@@ -36,6 +37,11 @@ export interface AnalysisPipelineDeps {
  * generated) is recorded to AnalysisStatsStore, one row per site, for later averaging.
  */
 export class AnalysisPipeline {
+  // checkClientSideRouting mutates the shared page's live location/DOM; serialized so concurrent
+  // candidate evaluations (bounded by maxConcurrentRequests) never race on it, mirroring RAPIDOR's
+  // own enqueueNavigation() around the same operation.
+  private clientRoutingQueue: Promise<unknown> = Promise.resolve();
+
   constructor(private deps: AnalysisPipelineDeps) {}
 
   async runForSite({ page, site }: { page: Page; site: string }): Promise<void> {
@@ -63,7 +69,7 @@ export class AnalysisPipeline {
             const key = `${event.method}|${url}`;
             if (seen.has(key)) continue;
             seen.add(key);
-            tasks.push(() => this.evaluateCandidate({ page, site, event, url, candidate }));
+            tasks.push(() => this.evaluateCandidate({ page, site, event, url, candidate, segment }));
           }
         }
       }
@@ -86,11 +92,12 @@ export class AnalysisPipeline {
     });
   }
 
-  private async evaluateCandidate({ page, site, event, url, candidate }: {
+  private async evaluateCandidate({ page, site, event, url, candidate, segment }: {
     page: Page; site: string;
     event: ReturnType<HttpEventStore['listBySite']>[number];
     url: string;
     candidate: ReturnType<typeof findCandidates>[number];
+    segment: SegmentCandidate;
   }): Promise<void> {
     const { vulnerabilityStore, classifier, options } = this.deps;
 
@@ -101,7 +108,22 @@ export class AnalysisPipeline {
       { status: event.status ?? 0, headers: event.responseHeaders ?? {}, body: event.responseBody ?? '', contentType: event.contentType },
       forged,
     );
-    if (!similarity.areSimilar) return;
+
+    let detectionMethod: 'http' | 'client-routing' = 'http';
+    if (!similarity.areSimilar) {
+      // The forged request itself didn't look like it leaked anything (or outright failed) — for a
+      // query-param candidate, check whether the SPA's own client-side routing honors it anyway,
+      // independently of the server response (RAPIDOR's testClientSideQueryParamsUsage fallback).
+      // By the time analysis runs (end of exploration), `page` may well be sitting on a different
+      // state than the one this event was captured from, so it is navigated back to event.pageUrl
+      // first — otherwise the pushState/popstate probe would run against the wrong React tree.
+      if (!segment.paramName) return;
+      const clientRouting = await this.enqueueClientRoutingCheck({
+        page, pageUrl: event.pageUrl, paramName: segment.paramName, paramValue: candidate.candidateValue,
+      });
+      if (!clientRouting.isUsingNewParams) return;
+      detectionMethod = 'client-routing';
+    }
 
     const differences = compareObj(candidate.referenceProps, candidate.candidateProps);
     const authz = await assessAuthZ({ differences, classifier });
@@ -113,11 +135,24 @@ export class AnalysisPipeline {
       referenceUrl: event.url, candidateUrl: url, method: event.method,
       referenceValue: String(candidate.referenceValue), candidateValue: candidate.candidateValue,
       motivation: describeDiffs(differences),
+      detectionMethod,
       responseSimilarity: similarity, authzDiff: authz,
     });
     if (inserted) {
-      log.warning(`AnalysisPipeline: potential access control issue — ${event.method} ${event.url} -> ${url}`);
+      log.warning(`AnalysisPipeline: potential access control issue (${detectionMethod}) — ${event.method} ${event.url} -> ${url}`);
     }
+  }
+
+  private enqueueClientRoutingCheck(args: { page: Page; pageUrl: string; paramName: string; paramValue: string }) {
+    const { page, pageUrl, ...rest } = args;
+    const result = this.clientRoutingQueue.then(async () => {
+      if (page.url() !== pageUrl) {
+        await page.goto(pageUrl, { waitUntil: 'load', timeout: 10_000 }).catch(() => undefined);
+      }
+      return checkClientSideRouting({ page, ...rest });
+    });
+    this.clientRoutingQueue = result.catch(() => undefined);
+    return result;
   }
 }
 
