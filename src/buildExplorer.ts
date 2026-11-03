@@ -13,6 +13,8 @@ import { OverlayDismisser } from './browser/OverlayDismisser';
 import { RequestThrottle } from './browser/RequestThrottle';
 import type { NetworkObserver } from './browser/NetworkObserver';
 import { NetworkObserverHooks } from './browser/NetworkObserverHooks';
+import type { ReactStateStore } from './db/ReactStateStore';
+import { ReactStateHooks } from './browser/ReactStateHooks';
 import { CompositeHooks } from './core/CompositeHooks';
 import type { IExplorationHooks } from './core/interfaces';
 import { StateFingerprinter } from './state/StateFingerprinter';
@@ -26,7 +28,8 @@ import { FileOutput } from './state/output/FileOutput';
  * @param site    site label in the results; defaults to the host of rootUrl
  */
 export function buildExplorer(
-  rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname, network?: NetworkObserver,
+  rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname,
+  network?: NetworkObserver, reactState?: ReactStateStore,
 ): DfsExplorer {
   // 1. leaves: no dependencies on other modules
   // one folder per site and per run: <site>_<timestamp>
@@ -56,6 +59,7 @@ export function buildExplorer(
   const maybeHooks: (IExplorationHooks | undefined)[] = [
     cfg.extension && new ExtensionCalls(cfg.extension, output, cfg.actionTimeoutMs),
     network && new NetworkObserverHooks(network),
+    reactState && new ReactStateHooks(reactState),
   ];
   const hooks = maybeHooks.filter((h): h is IExplorationHooks => Boolean(h));
 

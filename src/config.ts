@@ -44,9 +44,10 @@ export interface CrawlConfig {
   ignoreClickablesWithin: string[];  // CSS selectors: never treat anything inside these as clickable (e.g. nav/header/footer chrome)
   dismissOverlays: boolean;     // close blocking modals (Escape / close control) before capturing, so an interstitial does not cost a depth level
   networkObserver: boolean;    // capture same-site fetch/XHR traffic via Playwright (shadow mode, alongside the extension's own HTTPTracker)
+  reactState: boolean;          // persist RAPIDOR's React state graphs (window.__RAPIDOR__getLatestState), tied to the current URL
   db: {
     path: string;               // SQLite file, shared across the whole run (every site, every tab)
-    clearOnStart: boolean;      // wipe http_events once at the start of each crawler run; true for debugging
+    clearOnStart: boolean;      // wipe http_events/react_states once at the start of each crawler run; true for debugging
   };
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
   auth?: AuthConfig;            // credentials sent with every request to the explored site (optional)
@@ -102,7 +103,9 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   dismissOverlays: true,
   // crawler-side shadow capture of same-site fetch/XHR traffic, alongside the extension's own HTTPTracker
   networkObserver: true,
-  // deduplicated SQLite store the NetworkObserver writes into (shared by every tab/site in the run)
+  // persist RAPIDOR's React state graphs (minimal mode's whole output), tied to the current URL
+  reactState: true,
+  // deduplicated SQLite store the NetworkObserver/ReactStateHooks write into (shared by every tab/site in the run)
   db: { path: 'storage/http-events.db', clearOnStart: true },
   // Chrome extension: call results end up in the KeyValueStore as
   // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world

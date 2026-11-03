@@ -19,53 +19,52 @@ const request = (extra: Partial<CapturedRequest> = {}): CapturedRequest => ({
   ...extra,
 });
 
-function rowsOf(dbPath: string): unknown[] {
-  const db = new Database(dbPath, { readonly: true });
-  try {
-    return db.prepare('SELECT * FROM http_events').all();
-  } finally {
-    db.close();
-  }
+function newDb(name: string): Database.Database {
+  return new Database(join(root, name));
+}
+
+function rowsOf(db: Database.Database): unknown[] {
+  return db.prepare('SELECT * FROM http_events').all();
 }
 
 describe('HttpEventStore', () => {
   it('records a request once and dedupes an identical repeat into seen_count', () => {
-    const path = join(root, 'a.db');
-    const store = new HttpEventStore({ path, clearOnStart: false });
+    const db = newDb('a.db');
+    const store = new HttpEventStore({ db, clearOnStart: false });
     store.record({ site: 'a.test', request: request() });
     store.record({ site: 'a.test', request: request() });
 
-    const rows = rowsOf(path) as { seen_count: number }[];
+    const rows = rowsOf(db) as { seen_count: number }[];
     assert.equal(rows.length, 1);
     assert.equal(rows[0].seen_count, 2);
     assert.equal(store.count('a.test'), 1);
   });
 
   it('keeps the same fingerprint separate across different sites', () => {
-    const path = join(root, 'b.db');
-    const store = new HttpEventStore({ path, clearOnStart: false });
+    const db = newDb('b.db');
+    const store = new HttpEventStore({ db, clearOnStart: false });
     store.record({ site: 'a.test', request: request() });
     store.record({ site: 'b.test', request: request() });
 
-    assert.equal(rowsOf(path).length, 2);
+    assert.equal(rowsOf(db).length, 2);
     assert.equal(store.count(), 2);
   });
 
   it('a different postData on the same method+url is a distinct event', () => {
-    const path = join(root, 'c.db');
-    const store = new HttpEventStore({ path, clearOnStart: false });
+    const db = newDb('c.db');
+    const store = new HttpEventStore({ db, clearOnStart: false });
     store.record({ site: 'a.test', request: request({ method: 'POST', postData: '{"id":1}' }) });
     store.record({ site: 'a.test', request: request({ method: 'POST', postData: '{"id":2}' }) });
 
-    assert.equal(rowsOf(path).length, 2);
+    assert.equal(rowsOf(db).length, 2);
   });
 
   it('clearOnStart wipes rows left by a previous run', () => {
-    const path = join(root, 'd.db');
-    new HttpEventStore({ path, clearOnStart: false }).record({ site: 'a.test', request: request() });
-    assert.equal(rowsOf(path).length, 1);
+    const db = newDb('d.db');
+    new HttpEventStore({ db, clearOnStart: false }).record({ site: 'a.test', request: request() });
+    assert.equal(rowsOf(db).length, 1);
 
-    new HttpEventStore({ path, clearOnStart: true });
-    assert.equal(rowsOf(path).length, 0);
+    new HttpEventStore({ db, clearOnStart: true });
+    assert.equal(rowsOf(db).length, 0);
   });
 });

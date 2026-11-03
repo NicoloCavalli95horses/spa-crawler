@@ -1,11 +1,9 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import type { CapturedRequest } from '../browser/NetworkObserver';
 
 export interface HttpEventStoreOptions {
-  path: string;            // SQLite file, shared across the whole crawler run
+  db: Database.Database;   // shared connection (opened once per crawler run via openDatabase)
   clearOnStart: boolean;   // wipe http_events once, at construction
 }
 
@@ -17,10 +15,8 @@ export interface HttpEventStoreOptions {
 export class HttpEventStore {
   private db: Database.Database;
 
-  constructor({ path, clearOnStart }: HttpEventStoreOptions) {
-    mkdirSync(dirname(path), { recursive: true });
-    this.db = new Database(path);
-    this.db.pragma('journal_mode = WAL');
+  constructor({ db, clearOnStart }: HttpEventStoreOptions) {
+    this.db = db;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS http_events (
         id INTEGER PRIMARY KEY,

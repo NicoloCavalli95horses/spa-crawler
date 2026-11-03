@@ -7,6 +7,8 @@ import { extensionLaunchArgs } from './browser/ExtensionCalls';
 import { applyAuth } from './browser/Auth';
 import { NetworkObserver } from './browser/NetworkObserver';
 import { HttpEventStore } from './db/HttpEventStore';
+import { ReactStateStore } from './db/ReactStateStore';
+import { openDatabase } from './db/openDatabase';
 
 /** Margin beyond the exploration budget: final capture and graph saving. */
 const HANDLER_MARGIN_SECS = 120;
@@ -54,8 +56,12 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   const networkObservers = new WeakMap<Page, NetworkObserver>();
   // shared by every site/tab in this run: created (and cleared, if configured) exactly once here,
   // not per site, so concurrent sites never wipe each other's rows mid-run
-  const httpEventStore = cfg.networkObserver
-    ? new HttpEventStore({ path: cfg.db.path, clearOnStart: cfg.db.clearOnStart })
+  const db = cfg.networkObserver || cfg.reactState ? openDatabase({ path: cfg.db.path }) : undefined;
+  const httpEventStore = cfg.networkObserver && db
+    ? new HttpEventStore({ db, clearOnStart: cfg.db.clearOnStart })
+    : undefined;
+  const reactStateStore = cfg.reactState && db
+    ? new ReactStateStore({ db, clearOnStart: cfg.db.clearOnStart })
     : undefined;
   return new PlaywrightCrawler({
     // each site has its own page (more tabs with tabsPerSite) and its own explorer: sites can run in parallel
@@ -112,7 +118,7 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
         }),
       );
       try {
-        await buildExplorer(rootUrl, cfg, site, network).explore(page, extraPages);
+        await buildExplorer(rootUrl, cfg, site, network, reactStateStore).explore(page, extraPages);
         log.info(`${progress}Finished ${site}`);
       } finally {
         await Promise.all(extraPages.map((p) => p.close().catch(() => {})));

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { NetworkObserver } from '../src/browser/NetworkObserver';
 import { HttpEventStore } from '../src/db/HttpEventStore';
 import { APP_ORIGIN, useBrowser } from './helpers/browser';
@@ -83,8 +84,8 @@ describe('NetworkObserver', () => {
     await page.route(`${APP_ORIGIN}/api/items`, (route) => route.fulfill({
       status: 200, contentType: 'application/json', body: '{}',
     }));
-    const dbPath = join(root, 'store.db');
-    const store = new HttpEventStore({ path: dbPath, clearOnStart: false });
+    const db = new Database(join(root, 'store.db'));
+    const store = new HttpEventStore({ db, clearOnStart: false });
     const observer = new NetworkObserver({ origin: APP_ORIGIN, store });
     observer.attach(page);
 
