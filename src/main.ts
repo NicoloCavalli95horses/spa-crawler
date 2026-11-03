@@ -4,7 +4,6 @@ import { PlaywrightCrawler, Configuration, type FinalStatistics, type RequestOpt
 import { config as defaultConfig, type CrawlConfig, type ExtensionConfig } from './config';
 import { buildExplorer } from './buildExplorer';
 import { extensionLaunchArgs } from './browser/ExtensionCalls';
-import { applyAuth } from './browser/Auth';
 import { NetworkObserver } from './browser/NetworkObserver';
 import { installParamUsageTracking } from './browser/paramUsageTracker';
 import { HttpEventStore } from './db/HttpEventStore';
@@ -101,7 +100,6 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
     preNavigationHooks: [
       async ({ page, request }) => {
         await page.setViewportSize(cfg.viewport);
-        if (cfg.auth) await applyAuth(page.context(), cfg.auth, request.url);
         await installParamUsageTracking(page);
         const observer = new NetworkObserver({ origin: new URL(request.url).origin, store: httpEventStore });
         observer.attach(page);

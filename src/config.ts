@@ -12,12 +12,6 @@ export interface ExtensionConfig {
   calls: ExtensionCall[];
 }
 
-export interface AuthConfig {
-  bearerToken?: string;                  // becomes `Authorization: Bearer <token>`
-  headers?: Record<string, string>;      // extra headers (take precedence over bearerToken)
-  cookies?: Record<string, string>;      // session cookies, set on the site's domain
-}
-
 export interface CrawlConfig {
   startUrl: string;
   maxDepth: number;
@@ -53,27 +47,13 @@ export interface CrawlConfig {
     timeBetweenRequestsMs: number; // pacing after each forged request; mirrors RAPIDOR's config.js timeBetweenRequests
   };
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
-  auth?: AuthConfig;            // credentials sent with every request to the explored site (optional)
+  // authentication is deliberately not configurable through env vars/files: log in once by hand
+  // (HEADLESS=false + DEBUG_NO_CRAWLING=true, with userDataDir set) and the persistent profile
+  // keeps cookies/tokens for every run afterwards. Less error-prone than copying credentials
+  // around, and nothing secret ever needs to be written to disk as plain config.
   debugNoCrawling: boolean;     // opens the browser on the URL and waits for the user to close it, without exploring (manual login)
   userDataDir?: string;        // persistent browser profile (optional): cookies and storage survive across runs
 }
-
-/** "a=1; b=2" -> { a: '1', b: '2' } (format of the Cookie header copied from DevTools). */
-function parseCookies(raw: string): Record<string, string> {
-  return Object.fromEntries(raw.split(';').map((p) => p.trim()).filter(Boolean).map((p) => {
-    const i = p.indexOf('=');
-    return [p.slice(0, i), p.slice(i + 1)];
-  }));
-}
-
-const auth: AuthConfig | undefined =
-  process.env.AUTH_BEARER || process.env.AUTH_COOKIES || process.env.AUTH_HEADERS
-    ? {
-        bearerToken: process.env.AUTH_BEARER,
-        cookies: process.env.AUTH_COOKIES ? parseCookies(process.env.AUTH_COOKIES) : undefined,
-        headers: process.env.AUTH_HEADERS ? JSON.parse(process.env.AUTH_HEADERS) : undefined,
-      }
-    : undefined;
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
   // the protocol is required, otherwise Crawlee discards the URL
@@ -111,9 +91,6 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // Chrome extension: call results end up in the KeyValueStore as
   // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world
   // (content script with "world": "MAIN" in the manifest), otherwise window cannot see them.
-  // authentication, from environment variables only so that secrets are never committed:
-  //   AUTH_BEARER=<token>  AUTH_COOKIES='sid=abc; lang=it'  AUTH_HEADERS='{"X-Api-Key":"k"}'
-  auth,
   // persistent profile: USER_DATA_DIR=/path/to/profile npm start. Do not point to the Chrome
   // profile in use (it is locked, and Chrome 136+ forbids automation on that folder):
   // use a dedicated folder, or a copy of the profile. Requires concurrency: 1.

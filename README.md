@@ -2,6 +2,8 @@
 
 Web interface crawler that explores a site by **clicking**, not just by following links. For each site, it builds a `state → click → state` graph, where a *state* is a distinct UI configuration (page, open menu, modal, selected tab...).
 
+Alongside exploration, it also detects **IDOR/BOLA vulnerabilities**: it loads RAPIDOR, a React DevTools extension, to capture React component state as it clicks around, correlates that state with the HTTP traffic it observes, and — entirely server-side, in this Node process — forges alternative requests (and, for SPA routes that never hit the network, replays the page's own client-side routing) to see whether a different user's data leaks out.
+
 Based on [Crawlee](https://crawlee.dev) and [Playwright](https://playwright.dev) (Chromium), written in TypeScript.
 
 ## Quick Start
@@ -16,22 +18,24 @@ START_URL=https://example.com npm start
 # same as above, with the browser window visible
 HEADLESS=false npm start
 
-# loggin in and save data into a new browser profile
-USER_DATA_DIR=$HOME/.crawler-profile DEBUG_NO_CRAWLING=true HEADLESS=false  npm start
+# log in by hand once, saving cookies/tokens into a persistent browser profile (see Authentication below)
+USER_DATA_DIR=$HOME/.crawler-profile DEBUG_NO_CRAWLING=true HEADLESS=false npm start
 
 # explores the first N sites from the Tranco list (or N sites from rank P with --start P)
 npm run tranco -- --top 10 --depth 2
 npm run tranco -- --start 50 --top 5
 
+# IDOR findings + per-site stats from the last run(s), straight from SQLite
+npm run analysis-stats
+
 # tests (run with a real browser)
-npm test                                    
+npm test
 
 # execute TS type check
 npm run typecheck
-
 ```
 
-Results are saved in `storage/` (see [Output](https://www.google.com/search?q=%23output)).
+Crawl output (states/graph) is saved in `storage/sites/`; HTTP traffic, React state, and IDOR findings live in `storage/http-events.db` (SQLite) — see [Output](#output).
 
 ## How It Works
 
@@ -46,43 +50,54 @@ a **click** is performed, it waits for stability, and the resulting state is cap
 The visit stops when reaching `maxDepth`, `maxStates`, or `maxDurationSecs`:
 termination is guaranteed even on very rich UIs. An error on an element only costs its own branch.
 
+While this happens, three more things run unconditionally for every site (no feature flags to toggle them off — see [IDOR analysis](#idor-analysis-authzidor-detection)):
+
+* **`NetworkObserver`** captures same-site `fetch`/XHR traffic directly via Playwright (`page.on('requestfinished'/'requestfailed')`), deduplicated into `http_events`.
+* **`ReactStateHooks`** reads `window.__RAPIDOR__getLatestState()` (exposed by the RAPIDOR extension, see below) after each action and persists it into `react_states`, immediately re-indexing the interesting prop values it contains (`preindexed_values`).
+* **`AnalysisPipeline`** runs once per site, at the end of its exploration: for every captured HTTP event it looks for a sibling React component instance with a different value at the same prop path, forges the corresponding request, and flags+persists a vulnerability (`vulnerabilities`) when the response looks authorized and the differing props are themselves authorization-relevant.
+
 ### Main Components
 
 | Module | Role |
 | --- | --- |
-| [src/core/DfsExplorer.ts](https://www.google.com/search?q=src/core/DfsExplorer.ts) | Exploration algorithm and limits. Depends only on the interfaces in [src/core/interfaces.ts](https://www.google.com/search?q=src/core/interfaces.ts). |
-| [src/buildExplorer.ts](https://www.google.com/search?q=src/buildExplorer.ts) | Composition root: the single point that instantiates concrete classes. |
-| [src/main.ts](https://www.google.com/search?q=src/main.ts) | Configures `PlaywrightCrawler` (browser, language, viewport, concurrency). |
-| [src/browser/StabilityWaiter.ts](https://www.google.com/search?q=src/browser/StabilityWaiter.ts) | Waits for DOM, network, and finished animations to settle for `quietMs`. Ignores websockets, long-polling, and infinite animations. |
-| [src/extraction/ClickableExtractor.ts](https://www.google.com/search?q=src/extraction/ClickableExtractor.ts) | Collects visible clickable elements and discards those in the `blocklist`. |
-| [src/extraction/SelectorBuilder.ts](https://www.google.com/search?q=src/extraction/SelectorBuilder.ts) | Gives each element a stable ID: tag + rounded rectangle (+ text), never DOM IDs or classes. |
-| [src/state/StateFingerprinter.ts](https://www.google.com/search?q=src/state/StateFingerprinter.ts) | State ID: hash of the sorted set of clickables, plus URL and texts if active. |
-| [src/browser/StateNavigator.ts](https://www.google.com/search?q=src/browser/StateNavigator.ts) | Restores a state by reloading the root and replaying the click path. If the ID does not match, the UI is non-deterministic and the branch is skipped. |
-| [src/browser/ActionExecutor.ts](https://www.google.com/search?q=src/browser/ActionExecutor.ts) | Clicks at the element's coordinates. Closes dialogs and popups, blocks navigation to other origins. |
-| [src/state/StateStore.ts](https://www.google.com/search?q=src/state/StateStore.ts), [src/state/StateGraph.ts](https://www.google.com/search?q=src/state/StateGraph.ts) | Seen states, already explored (state, element) pairs, graph edges. |
-| [scripts/tranco.ts](https://www.google.com/search?q=scripts/tranco.ts) | Runs the crawler on N domains from the [Tranco list](https://tranco-list.eu), starting from rank P (`--start`, default 1). |
+| [src/core/DfsExplorer.ts](src/core/DfsExplorer.ts) | Exploration algorithm and limits. Depends only on the interfaces in [src/core/interfaces.ts](src/core/interfaces.ts). |
+| [src/buildExplorer.ts](src/buildExplorer.ts) | Composition root: the single point that instantiates concrete classes. |
+| [src/main.ts](src/main.ts) | Configures `PlaywrightCrawler` (browser, language, viewport, concurrency) and wires up the SQLite stores shared across the whole run. |
+| [src/browser/StabilityWaiter.ts](src/browser/StabilityWaiter.ts) | Waits for DOM, network, and finished animations to settle for `quietMs`. Ignores websockets, long-polling, and infinite animations. |
+| [src/extraction/ClickableExtractor.ts](src/extraction/ClickableExtractor.ts) | Collects visible clickable elements and discards those in the `blocklist`. |
+| [src/extraction/SelectorBuilder.ts](src/extraction/SelectorBuilder.ts) | Gives each element a stable ID: tag + rounded rectangle (+ text), never DOM IDs or classes. |
+| [src/state/StateFingerprinter.ts](src/state/StateFingerprinter.ts) | State ID: hash of the sorted set of clickables, plus URL and texts if active. |
+| [src/browser/StateNavigator.ts](src/browser/StateNavigator.ts) | Restores a state by reloading the root and replaying the click path. If the ID does not match, the UI is non-deterministic and the branch is skipped. |
+| [src/browser/ActionExecutor.ts](src/browser/ActionExecutor.ts) | Clicks at the element's coordinates. Closes dialogs and popups, blocks navigation to other origins. |
+| [src/state/StateStore.ts](src/state/StateStore.ts), [src/state/StateGraph.ts](src/state/StateGraph.ts) | Seen states, already explored (state, element) pairs, graph edges. |
+| [src/browser/NetworkObserver.ts](src/browser/NetworkObserver.ts) | Shadow capture of same-site HTTP traffic (see above), persisted via [src/db/HttpEventStore.ts](src/db/HttpEventStore.ts). |
+| [src/browser/ReactStateHooks.ts](src/browser/ReactStateHooks.ts) | Reads and persists RAPIDOR's React state ([src/db/ReactStateStore.ts](src/db/ReactStateStore.ts)) and pre-indexes it ([src/db/PreindexedValueStore.ts](src/db/PreindexedValueStore.ts)). |
+| [src/analysis/AnalysisPipeline.ts](src/analysis/AnalysisPipeline.ts) | The preindex → match → forge → evaluate chain; see [IDOR analysis](#idor-analysis-authzidor-detection). |
+| [scripts/tranco.ts](scripts/tranco.ts) | Runs the crawler on N domains from the [Tranco list](https://tranco-list.eu), starting from rank P (`--start`, default 1). |
+| [scripts/analysisStats.ts](scripts/analysisStats.ts) | Prints per-site IDOR stats, cross-site averages, and flagged findings from `storage/http-events.db`. |
 
 ### Design Choices
 
 * **Identity without IDs or classes.** Framework-generated IDs and classes change on every load. Therefore, elements and states are identified by geometry and text. The viewport is fixed and Crawlee's random fingerprinting is disabled.
 * **One Crawlee request per site.** All exploration for a site lives in a single request handler without retries: a retry would restart from scratch, duplicating states.
 * **Isolated contexts.** Each site has its own incognito page, so cookies and storage do not mix. Multiple sites can run in parallel using `concurrency`.
-* **Several tabs per site.** With `tabsPerSite > 1` each tab runs its own depth-first search over the shared state store and graph. `markExplored` is synchronous, so the first tab to reach a (state, element) pair claims it; a tab that runs out of work picks up unexplored elements from other tabs' states. Exploration is therefore not deterministic. Tabs need the persistent browser context (as with the extension).
-* **HTTP cache stays on.** Playwright's `page.route` disables Chromium's HTTP cache, so every restore would re-download all scripts and styles. External navigations are blocked through a CDP `Fetch` interception limited to documents instead, and the browser cache works as for a normal user. (Note: `auth` headers still use `context.route`, which disables the cache again.)
+* **Several tabs per site.** With `tabsPerSite > 1` each tab runs its own depth-first search over the shared state store and graph. `markExplored` is synchronous, so the first tab to reach a (state, element) pair claims it; a tab that runs out of work picks up unexplored elements from other tabs' states. Exploration is therefore not deterministic. Tabs need the persistent browser context (as with the extension or a saved profile).
+* **HTTP cache stays on.** Playwright's `page.route` disables Chromium's HTTP cache, so every restore would re-download all scripts and styles. External navigations are blocked through a CDP `Fetch` interception limited to documents instead, and the browser cache works as for a normal user.
 * **Always in English.** The browser declares the `en-US` locale (both `navigator.language` and the `Accept-Language` header). Multilingual sites therefore respond in English, and saved texts remain comparable with the `blocklist`. Exceptions remain possible for sites that choose the language based on IP.
+* **SQLite, not JSON, for anything the analysis pipeline produces.** Captured HTTP events, React state, pre-indexed values, flagged vulnerabilities, per-site stats, and the authorization classifier's cache all live in `storage/http-events.db`. It is the single source of truth: no artifact dump duplicates it, and later runs can query/average across sites trivially.
 
 ## Configuration
 
-Everything is in [src/config.ts](https://www.google.com/search?q=src/config.ts). The most important settings:
+Everything is in [src/config.ts](src/config.ts). The most important settings:
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `startUrl` | `$START_URL` or `[https://example.com](https://example.com)` | Site to explore with `npm start`. Protocol is required. |
-| `maxDepth` / `maxStates` / `maxDurationSecs` | `3` / `500` / `1800` | Exploration limits. `maxStates` applies to each tab, `maxDurationSecs` to the whole site. |
+| `startUrl` | `$START_URL` or `https://learn.pimsleur.com/MiniLearn` | Site to explore with `npm start`. Protocol is required. |
+| `maxDepth` / `maxStates` / `maxDurationSecs` | `2` / `500` / `1800` | Exploration limits. `maxStates` applies to each tab, `maxDurationSecs` to the whole site. |
 | `concurrency` | `1` | Sites explored in parallel. |
-| `tabsPerSite` | `1` | Tabs exploring the same site together (same browser context: cookies and storage are shared). Work is split automatically and a state is never saved twice. |
+| `tabsPerSite` | `5` | Tabs exploring the same site together (same browser context: cookies and storage are shared). Work is split automatically and a state is never saved twice. Keep in sync with RAPIDOR's own `maxStateSnapshots`. |
 | `restoreDelayMs` | `150` | Minimum gap between two page reloads of the same site, across all its tabs. |
-| `viewport` | `1280×800` | Fixed: rectangles, and thus IDs, depend on it. |
+| `viewport` | `1920×1080` | Fixed: rectangles, and thus IDs, depend on it. |
 | `stability` | `500 / 10000 / 3000 ms` | Required silence, maximum wait ceiling, threshold beyond which an open request is ignored. |
 | `rectGridPx` | `4` | Rectangle rounding: absorbs small layout shifts. |
 | `includeUrlInFingerprint` | `true` | Two routes with the same layout remain distinct states. |
@@ -90,41 +105,86 @@ Everything is in [src/config.ts](https://www.google.com/search?q=src/config.ts).
 | `headless` | `true` | `HEADLESS=false` opens the browser window to watch the crawler in action. |
 | `locale` | `en-US` | Language requested from sites. |
 | `screenshots` | `false` | Saves a PNG of each state. Useful only for visually inspecting results. |
-| `blocklist` | `logout, quit, delete` | Substrings (case-insensitive) of text, `aria-label`, or `href` of elements that should never be clicked. |
+| `blocklist` | `logout, log out, sign out, quit, delete` | Substrings (case-insensitive) of text, `aria-label`, or `href` of elements that should never be clicked. |
+| `db.path` | `storage/http-events.db` | Shared SQLite file for the whole run. |
+| `db.clearOnStart` | `true` | Wipes `http_events`/`react_states`/`preindexed_values`/`vulnerabilities`/`analysis_stats` once at the start of the run. |
+| `db.clearClassifierCache` | `false` | Wipes `authz_classifications` too. Off by default: a classification is a pure function of the key string, independent of site or run, so it is worth keeping forever. |
+| `analysis.maxConcurrentRequests` / `analysis.timeBetweenRequestsMs` | `3` / `800` | Bound and pace forged requests, mirroring RAPIDOR's own `config.js` defaults. |
 
 ## Authentication (protected areas)
 
-Optional. Credentials are sent with every HTTP request to the explored site and its subdomains (navigations, fetch/XHR, resources); requests to third-party domains never receive them. Set them through environment variables (so secrets stay out of the repo) or the `auth` field in [src/config.ts](src/config.ts):
+There is no way to feed credentials in through environment variables, config, or a `.env` file — a token/cookie copied into a file is easy to get stale or leak, and awkward to keep in sync across runs. Instead, log in **once by hand** into a persistent Chromium profile, and every later run reuses it:
 
 ```bash
-AUTH_BEARER=eyJ... START_URL=https://www.busuu.com/dashboard/timeline/a1 npm start
-AUTH_COOKIES='sid=abc; remember=1' npm start     # same format as the DevTools Cookie header
-AUTH_HEADERS='{"X-Api-Key":"k"}' npm start      # any extra header; overrides AUTH_BEARER's Authorization
+# opens a real, visible browser on startUrl and waits for you to close it — log in there
+USER_DATA_DIR=$HOME/.crawler-profile DEBUG_NO_CRAWLING=true HEADLESS=false START_URL=https://example.com/login npm start
+
+# later runs just point at the same profile; cookies/local storage/tokens are already there
+USER_DATA_DIR=$HOME/.crawler-profile START_URL=https://example.com/dashboard npm start
 ```
 
-## Browser extension (Chrome)
+* `userDataDir` requires `concurrency: 1` (a profile cannot be shared between browsers running at once).
+* Do not point it at the Chrome profile you actually use day-to-day: it gets locked, and Chrome 136+ forbids automating it anyway. Use a dedicated folder (or a copy of one).
+* `debugNoCrawling: true` (`DEBUG_NO_CRAWLING=true`) skips exploration entirely: the browser opens on `startUrl` and stays open until you close it — exactly the window you need to log in by hand.
 
-The crawler can load an unpacked Chrome extension and call functions it exposes on `window` at the start or end of each site's analysis. Declare it in [src/config.ts](src/config.ts):
+## Browser extension (RAPIDOR)
+
+The crawler loads RAPIDOR's unpacked Chrome extension to read React component state as it explores. It runs in RAPIDOR's own `mode: 'minimal'` (set in its `config.js`): the extension only exposes `window.__RAPIDOR__getLatestState()` (Bridge + StateManager) — HTTP tracking and IDOR analysis both happen in this crawler instead (see [IDOR analysis](#idor-analysis-authzidor-detection)), not in the extension.
+
+Declared in [src/config.ts](src/config.ts):
 
 ```ts
 extension: {
-  path: './extensions/rapidor',   // folder containing manifest.json
+  path: '../rapidor/packages/react-devtools-extensions/chrome/build/unpacked', // folder containing manifest.json
   calls: [
-      // clears the extension's shared IndexedDB once, so a run on a persistent profile starts clean
-      { fn: '__RAPIDOR__reset', when: 'start' },
-      // before acting on a page, wait until the extension has captured at least one state for it
-      // (otherwise a fast reload would navigate away before React state is recorded)
-      { fn: '__RAPIDOR__waitToAction', when: 'before-action', args: [{ timeoutMs: 3000 }] },
-      { fn: '__RAPIDOR__getData', when: 'end' },
-    ],
+    // clears the extension's shared IndexedDB once, so a run on a persistent profile starts clean
+    { fn: '__RAPIDOR__reset', when: 'start' },
+    // before/after each click: force-settle so the crawler never reads a half-updated React tree
+    { fn: '__RAPIDOR__waitToAction', when: 'before-action', args: [{ timeoutMs: 3000 }] },
+    { fn: '__RAPIDOR__waitToAction', when: 'after-action', args: [{ timeoutMs: 8000 }] },
+    // kept only to surface extension runtime errors to the crawler log
+    { fn: '__RAPIDOR__getData', when: 'end' },
+  ],
 },
 ```
 
-* `start`: before the first state is captured. `before-action`: called before the crawler interacts with the clickable elements. `end`: after the last state (also when the exploration stops on an error), on the page as it was left by the last click.
-* Return values (JSON-serializable, promises are awaited) are saved in `storage/key_value_stores/default/<site>--extension-<when>-<fn>.json`.
+* `start`: before the first state is captured. `before-action`/`after-action`: around every click on a clickable element. `end`: after the last state (also when the exploration stops on an error), on the page as it was left by the last click.
 * The functions must live in the page's `MAIN` world: declare the content script with `"world": "MAIN"` in `manifest.json`, otherwise `window` does not see them.
 * A missing function (waits up to `actionTimeoutMs`) or a failing call logs a warning and never stops the crawl.
 * With an extension, each site gets its own Chromium with a temporary profile (isolation is the same as incognito, but memory use is higher). Headless uses Chromium's new headless mode (`npx playwright install chromium`).
+* After editing RAPIDOR's own source, rebuild it before the crawler picks it up: `cd ../rapidor/packages/react-devtools-extensions && NODE_ENV=development node ./chrome/build`.
+
+## IDOR analysis (authz/IDOR detection)
+
+Ported from RAPIDOR's own full-mode pipeline (preindex → match → forge → evaluate), running server-side here instead of in-page:
+
+1. **Preindex** ([src/analysis/preindex.ts](src/analysis/preindex.ts)) — every captured React node's props are walked for "interesting" values (short strings/numbers under keys like `id`, `user`, `role`, `owner`, ...) and tokenized into `preindexed_values`.
+2. **Segment extraction** ([src/analysis/segments.ts](src/analysis/segments.ts)) — for each captured HTTP event, proposes the URL path segment and each query parameter as a candidate "swap this value" target.
+3. **Match finding** ([src/analysis/matchFinder.ts](src/analysis/matchFinder.ts)) — if a candidate's value matches a pre-indexed one, looks up sibling instances of the *same React component* with a different value at the same prop path.
+4. **Request forging** ([src/analysis/requestForge.ts](src/analysis/requestForge.ts)) — splices the sibling's value in and replays the request via Playwright's `page.request.fetch()` (reuses the browsing context's cookies, but — unlike the page's own `fetch`/XHR — never fires `page.on('request')`, so forged probes never pollute `http_events`).
+5. **Response evaluation** ([src/analysis/responseEvaluate.ts](src/analysis/responseEvaluate.ts)) — the forged response is compared against the original (status/headers/body-shape similarity); if it still looks "authorized", the differing props are classified for authorization-relevance by a sentence-embedding model (`src/analysis/authzClassifier.ts`, `@huggingface/transformers`, cosine similarity against a few fixed "entitlement" concept sentences, cached in `authz_classifications` — see `db.clearClassifierCache` above).
+6. **Client-side routing fallback** ([src/analysis/clientRouting.ts](src/analysis/clientRouting.ts)) — for a query-parameter candidate whose forged request did not look like it leaked anything (e.g. the server correctly rejects it), also checks whether the page's own client-side routing honors that parameter anyway: it navigates back to the page the original event happened on, mutates `window.location` (`pushState` + a synthetic `popstate`) and watches for a real DOM mutation, independent of any server response — this is how a purely client-routed authorization bug (the UI trusts a query string it never re-validates) gets caught even though no "wrong" request ever reaches the network.
+
+A flagged finding (`vulnerabilities` table) records which detection path caught it (`detectionMethod: 'http' | 'client-routing'`), the reference/candidate URLs, and a human-readable `motivation` (which props differ and how). Everything above — including every stat that used to only exist transiently (segments extracted, matches found, candidates found, HTTP events, React states, requests generated, vulnerabilities flagged) — is persisted per site in `analysis_stats`; inspect it with:
+
+```bash
+npm run analysis-stats                              # reads storage/http-events.db
+npm run analysis-stats -- --db storage/other-run.db  # or any other SQLite file in that shape
+```
+
+### Test fixture: `react-app-target/`
+
+A small Next.js app with two deliberately planted IDORs, used to prove detection end-to-end rather than just unit-testing each module in isolation:
+
+* a **server-side** one — `/api/detail/:id` and the `/detail/:id` page it backs have no authorization check at all;
+* a **client-side-routing** one — a `resourceId` query parameter is checked server-side on the normal click path (`/api/preview?resourceId=`, which correctly 403s on a premium resource), but a separate effect renders whatever ends up in that query string straight from the unguarded detail endpoint, so a crafted URL bypasses the check entirely.
+
+```bash
+cd react-app-target && node server.js   # builds (if needed) and serves everything on :3000, API included
+# in another terminal, from the repo root:
+START_URL=http://localhost:3000 npm start
+npm run analysis-stats   # both IDORs should show up, one per detectionMethod
+```
 
 ## Output
 
@@ -132,10 +192,12 @@ Each analysis gets its own folder `storage/sites/<site>_<timestamp>/` (e.g. `goo
 
 * `states.json`: JSON array with one record per state (ID, URL, depth, click path from the root, clickables, visible texts). It stays valid JSON while the crawl is running.
 * `state-graph.json`: the graph, edges `{ from, to, action }`. Updated at every new state.
-* `extension-end-<fn>.json`: result of the browser extension call (see above), written at the end.
+* `extension-end-<fn>.json`: result of the browser extension call declared with `when: 'end'` (mainly used today to surface RAPIDOR runtime errors — its analysis-related fields are not populated in `mode: 'minimal'`).
 * `state-<id>.png`: only when `screenshots` is enabled.
 
 Crawlee's own bookkeeping (request queue, statistics) stays in `storage/{datasets,key_value_stores,request_queues}` and is cleared at the start of each run; `storage/sites/` is never cleared.
+
+Everything from [IDOR analysis](#idor-analysis-authzidor-detection) — `http_events`, `react_states`, `preindexed_values`, `vulnerabilities`, `analysis_stats`, `authz_classifications` — lives in the single SQLite file at `db.path` (default `storage/http-events.db`), not under `storage/sites/`.
 
 ## Statistics daemon
 
@@ -145,12 +207,7 @@ npm run stats -- --once          # single pass
 npm run stats -- --interval 10 --dir storage/sites
 ```
 
-Reads every folder in `storage/sites/` and writes `storage/sites/_stats.json` with a per-site row, plus totals and averages:
-
-* crawler metrics (states, edges) over all sites, including those still running;
-* RAPIDOR metrics only over the sites whose extension result is already there. `__RAPIDOR__getData` returns one entry per tab, and the tabs are merged per site. Counters (React states saved, HTTP events tracked/analyzed, requests generated, response evaluations, prop differences, ...) are summed, and `Max components seen` takes the highest value.
-* **potential vulnerabilities**: distinct `id`s in `Vulnerability report` (a report seen by two tabs counts once), plus `sitesWithVulnerabilities`. Each site row lists the ids; the full reports, for manual inspection, stay in the site's `extension-end-__RAPIDOR__getData.json`.
-* sensitive (authZ-relevant) keys: distinct key names per site.
+Reads every folder in `storage/sites/` and writes `storage/sites/_stats.json` with a per-site row, plus totals and averages, for crawl-level metrics (states, edges) over all sites, including those still running. It predates the server-side analysis pipeline and still aggregates whatever an extension `end` call returned as JSON — which, in `mode: 'minimal'`, no longer carries vulnerability/React-state/HTTP counters. For IDOR findings and analysis stats, use `npm run analysis-stats` instead.
 
 ## Tranco List
 
@@ -162,7 +219,6 @@ npm run tranco -- --start 50 --top 5
 
 # fixed list, for reproducible runs
 npm run tranco -- --list-id PYK6J
-
 ```
 
 `--top` is the number of sites, `--start` the Tranco rank of the first one (default `1`). Each site's logs are prefixed with its position in the run and its rank, e.g. `[2/5] #51 Exploring example.com (https://example.com/)`.
