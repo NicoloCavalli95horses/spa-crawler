@@ -14,7 +14,13 @@ import { RequestThrottle } from './browser/RequestThrottle';
 import type { NetworkObserver } from './browser/NetworkObserver';
 import { NetworkObserverHooks } from './browser/NetworkObserverHooks';
 import type { ReactStateStore } from './db/ReactStateStore';
+import type { PreindexedValueStore } from './db/PreindexedValueStore';
 import { ReactStateHooks } from './browser/ReactStateHooks';
+import type { HttpEventStore } from './db/HttpEventStore';
+import type { VulnerabilityStore } from './db/VulnerabilityStore';
+import type { AuthzClassifier } from './analysis/authzClassifier';
+import { AnalysisPipeline } from './analysis/AnalysisPipeline';
+import { AnalysisHooks } from './browser/AnalysisHooks';
 import { CompositeHooks } from './core/CompositeHooks';
 import type { IExplorationHooks } from './core/interfaces';
 import { StateFingerprinter } from './state/StateFingerprinter';
@@ -23,14 +29,26 @@ import { StateStore } from './state/StateStore';
 import { StateGraph } from './state/StateGraph';
 import { FileOutput } from './state/output/FileOutput';
 
+/** Cross-cutting collaborators that live for the whole crawler run (shared across sites), not just this one site's exploration. */
+export interface ObservabilityDeps {
+  network?: NetworkObserver;
+  reactState?: ReactStateStore;
+  preindex?: PreindexedValueStore;
+  analysis?: {
+    httpEventStore: HttpEventStore;
+    vulnerabilityStore: VulnerabilityStore;
+    classifier: AuthzClassifier;
+  };
+}
+
 /**
  * @param rootUrl URL where the exploration starts (and returns to), already past redirects
  * @param site    site label in the results; defaults to the host of rootUrl
  */
 export function buildExplorer(
-  rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname,
-  network?: NetworkObserver, reactState?: ReactStateStore,
+  rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname, deps: ObservabilityDeps = {},
 ): DfsExplorer {
+  const { network, reactState, preindex, analysis } = deps;
   // 1. leaves: no dependencies on other modules
   // one folder per site and per run: <site>_<timestamp>
   const output = new FileOutput(site);
@@ -56,10 +74,18 @@ export function buildExplorer(
   const navigator = new StateNavigator(rootUrl, executor, waiter, capturer, new RequestThrottle(cfg.restoreDelayMs));
 
   // 3. the algorithm receives everything ready-made
+  const analysisPipeline = cfg.analysis.enabled && analysis && preindex && reactState
+    ? new AnalysisPipeline(
+      analysis.httpEventStore, preindex, reactState, analysis.vulnerabilityStore, analysis.classifier,
+      { maxConcurrentRequests: cfg.analysis.maxConcurrentRequests, timeBetweenRequestsMs: cfg.analysis.timeBetweenRequestsMs },
+    )
+    : undefined;
+
   const maybeHooks: (IExplorationHooks | undefined)[] = [
     cfg.extension && new ExtensionCalls(cfg.extension, output, cfg.actionTimeoutMs),
     network && new NetworkObserverHooks(network),
-    reactState && new ReactStateHooks(reactState),
+    reactState && new ReactStateHooks(reactState, preindex),
+    analysisPipeline && new AnalysisHooks(analysisPipeline, site),
   ];
   const hooks = maybeHooks.filter((h): h is IExplorationHooks => Boolean(h));
 

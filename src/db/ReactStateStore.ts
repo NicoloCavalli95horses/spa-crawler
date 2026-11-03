@@ -3,6 +3,9 @@ import type Database from 'better-sqlite3';
 /** Loose on purpose: the graph's shape is owned by RAPIDOR, not the crawler. */
 export interface RapidorGraph {
   fingerprint: string;
+  nodes?: Record<string, { id: string; componentId?: number; key?: unknown; tag?: number; name?: string; props?: unknown }>;
+  relations?: Record<string, unknown>;
+  componentIndex?: Record<string, string[]>;
   [key: string]: unknown;
 }
 
@@ -36,16 +39,27 @@ export class ReactStateStore {
     if (clearOnStart) this.db.exec('DELETE FROM react_states');
   }
 
-  /** No-ops when `graph` has no fingerprint: nothing usable to dedupe/store (extension absent or not yet settled). */
-  record({ site, url, graph }: { site: string; url: string; graph: RapidorGraph | null | undefined }): void {
-    if (!graph?.fingerprint) return;
-    this.db.prepare(`
+  /**
+   * No-ops (returns undefined) when `graph` has no fingerprint: nothing usable to dedupe/store
+   * (extension absent or not yet settled). Otherwise returns the row's id, via RETURNING, so a
+   * caller (ReactStateHooks) can (re)index it without a separate lookup.
+   */
+  record({ site, url, graph }: { site: string; url: string; graph: RapidorGraph | null | undefined }): number | undefined {
+    if (!graph?.fingerprint) return undefined;
+    const row = this.db.prepare(`
       INSERT INTO react_states (site, url, fingerprint, graph, captured_at)
       VALUES (@site, @url, @fingerprint, @graph, @capturedAt)
       ON CONFLICT(url, fingerprint) DO UPDATE SET seen_count = seen_count + 1
-    `).run({
+      RETURNING id
+    `).get({
       site, url, fingerprint: graph.fingerprint, graph: JSON.stringify(graph), capturedAt: new Date().toISOString(),
-    });
+    }) as { id: number } | undefined;
+    return row?.id;
+  }
+
+  getById(stateId: number): RapidorGraph | undefined {
+    const row = this.db.prepare('SELECT graph FROM react_states WHERE id = ?').get(stateId) as { graph: string } | undefined;
+    return row ? (JSON.parse(row.graph) as RapidorGraph) : undefined;
   }
 
   count(url?: string): number {

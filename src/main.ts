@@ -8,7 +8,11 @@ import { applyAuth } from './browser/Auth';
 import { NetworkObserver } from './browser/NetworkObserver';
 import { HttpEventStore } from './db/HttpEventStore';
 import { ReactStateStore } from './db/ReactStateStore';
+import { PreindexedValueStore } from './db/PreindexedValueStore';
+import { VulnerabilityStore } from './db/VulnerabilityStore';
+import { AuthzClassifier } from './analysis/authzClassifier';
 import { openDatabase } from './db/openDatabase';
+import type { ObservabilityDeps } from './buildExplorer';
 
 /** Margin beyond the exploration budget: final capture and graph saving. */
 const HANDLER_MARGIN_SECS = 120;
@@ -56,13 +60,30 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   const networkObservers = new WeakMap<Page, NetworkObserver>();
   // shared by every site/tab in this run: created (and cleared, if configured) exactly once here,
   // not per site, so concurrent sites never wipe each other's rows mid-run
-  const db = cfg.networkObserver || cfg.reactState ? openDatabase({ path: cfg.db.path }) : undefined;
+  const needsDb = cfg.networkObserver || cfg.reactState || cfg.analysis.enabled;
+  const db = needsDb ? openDatabase({ path: cfg.db.path }) : undefined;
   const httpEventStore = cfg.networkObserver && db
     ? new HttpEventStore({ db, clearOnStart: cfg.db.clearOnStart })
     : undefined;
   const reactStateStore = cfg.reactState && db
     ? new ReactStateStore({ db, clearOnStart: cfg.db.clearOnStart })
     : undefined;
+  const preindexStore = cfg.reactState && db
+    ? new PreindexedValueStore({ db, clearOnStart: cfg.db.clearOnStart })
+    : undefined;
+  // the analysis pipeline needs http events + react state + their preindex: only wired when all three exist
+  const vulnerabilityStore = cfg.analysis.enabled && db && httpEventStore && reactStateStore && preindexStore
+    ? new VulnerabilityStore({ db, clearOnStart: cfg.db.clearOnStart })
+    : undefined;
+  // shared across every site in this run: the embedding model loads once and its classification cache carries over
+  const classifier = vulnerabilityStore ? new AuthzClassifier() : undefined;
+  const deps: ObservabilityDeps = {
+    reactState: reactStateStore,
+    preindex: preindexStore,
+    analysis: httpEventStore && vulnerabilityStore && classifier
+      ? { httpEventStore, vulnerabilityStore, classifier }
+      : undefined,
+  };
   return new PlaywrightCrawler({
     // each site has its own page (more tabs with tabsPerSite) and its own explorer: sites can run in parallel
     maxConcurrency: cfg.concurrency,
@@ -118,7 +139,7 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
         }),
       );
       try {
-        await buildExplorer(rootUrl, cfg, site, network, reactStateStore).explore(page, extraPages);
+        await buildExplorer(rootUrl, cfg, site, { ...deps, network }).explore(page, extraPages);
         log.info(`${progress}Finished ${site}`);
       } finally {
         await Promise.all(extraPages.map((p) => p.close().catch(() => {})));

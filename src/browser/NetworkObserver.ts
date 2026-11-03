@@ -52,8 +52,13 @@ export class NetworkObserver {
   }
 
   attach(page: Page): void {
-    page.on('requestfinished', (req) => { void this.handleFinished(req); });
-    page.on('requestfailed', (req) => { this.handleFailed(req); });
+    page.on('requestfinished', (req) => { void this.handle(req); });
+    // Some frameworks (observed with Next.js's RSC router) read a response fully, then cancel the
+    // body stream once they have what they need; Chrome reports that as a failed/aborted request
+    // even though a real response (status/headers) was received. req.response() still resolves in
+    // that case, so these are handled identically to a finished request; only a response-less
+    // failure (DNS, connection refused, truly aborted mid-flight) counts as `stats.failed`.
+    page.on('requestfailed', (req) => { void this.handle(req); });
   }
 
   snapshot(): { requests: CapturedRequest[]; stats: NetworkStats } {
@@ -69,9 +74,12 @@ export class NetworkObserver {
     }
   }
 
-  private async handleFinished(req: Request): Promise<void> {
+  private async handle(req: Request): Promise<void> {
     if (req.resourceType() !== 'fetch' && req.resourceType() !== 'xhr') return;
     if (!this.isSameSite(req.url())) { this.stats.skippedOffDomain++; return; }
+
+    const res = await req.response().catch(() => null);
+    if (!res) { this.stats.failed++; return; }   // a genuine failure: no response at all (DNS, connection refused, ...)
 
     const entry: CapturedRequest = {
       url: req.url(),
@@ -80,9 +88,7 @@ export class NetworkObserver {
       postData: truncate(req.postData() ?? undefined, this.maxBodyBytes),
       timestamp: new Date().toISOString(),
     };
-
-    const res = await req.response().catch(() => null);
-    if (res) await this.fillResponse(entry, res);
+    await this.fillResponse(entry, res);
 
     this.requests.push(entry);
     this.store?.record({ site: this.site, request: entry });
@@ -98,15 +104,11 @@ export class NetworkObserver {
     entry.status = res.status();
     entry.responseHeaders = await res.allHeaders().catch(() => ({}));
     entry.contentType = entry.responseHeaders['content-type'];
-    // binary or already-consumed bodies just end up without a responseBody: best-effort only
+    // binary bodies, or ones a client-side stream reader already cancelled (observed with Next.js's
+    // RSC router: it reads what it needs, then cancels, which Chrome reports as a failed request
+    // even though status/headers did arrive) just end up without a responseBody: best-effort only.
     const text = await res.text().catch(() => undefined);
     entry.responseBody = truncate(text, this.maxBodyBytes);
-  }
-
-  private handleFailed(req: Request): void {
-    if (req.resourceType() !== 'fetch' && req.resourceType() !== 'xhr') return;
-    if (!this.isSameSite(req.url())) return;
-    this.stats.failed++;
   }
 }
 

@@ -47,7 +47,12 @@ export interface CrawlConfig {
   reactState: boolean;          // persist RAPIDOR's React state graphs (window.__RAPIDOR__getLatestState), tied to the current URL
   db: {
     path: string;               // SQLite file, shared across the whole run (every site, every tab)
-    clearOnStart: boolean;      // wipe http_events/react_states once at the start of each crawler run; true for debugging
+    clearOnStart: boolean;      // wipe http_events/react_states/preindexed_values/vulnerabilities once at the start of each crawler run; true for debugging
+  };
+  analysis: {
+    enabled: boolean;              // run the IDOR analysis pipeline (preindex -> match -> forge -> evaluate) at the end of each site
+    maxConcurrentRequests: number; // bounds forged-request concurrency; mirrors RAPIDOR's config.js maxConcurrentRequests
+    timeBetweenRequestsMs: number; // pacing after each forged request; mirrors RAPIDOR's config.js timeBetweenRequests
   };
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
   auth?: AuthConfig;            // credentials sent with every request to the explored site (optional)
@@ -107,6 +112,8 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   reactState: true,
   // deduplicated SQLite store the NetworkObserver/ReactStateHooks write into (shared by every tab/site in the run)
   db: { path: 'storage/http-events.db', clearOnStart: true },
+  // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline
+  analysis: { enabled: true, maxConcurrentRequests: 3, timeBetweenRequestsMs: 800 },
   // Chrome extension: call results end up in the KeyValueStore as
   // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world
   // (content script with "world": "MAIN" in the manifest), otherwise window cannot see them.

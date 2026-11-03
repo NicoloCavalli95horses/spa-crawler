@@ -7,6 +7,17 @@ export interface HttpEventStoreOptions {
   clearOnStart: boolean;   // wipe http_events once, at construction
 }
 
+export interface HttpEventRow {
+  method: string;
+  url: string;
+  status?: number;
+  contentType?: string;
+  requestHeaders: Record<string, string>;
+  responseHeaders?: Record<string, string>;
+  postData?: string;
+  responseBody?: string;
+}
+
 /**
  * Deduplicated, cross-tab persistence for HTTP events captured by NetworkObserver, so later
  * analysis (match-finding, request-forging) sees each distinct exchange exactly once, tagged with
@@ -72,6 +83,24 @@ export class HttpEventStore {
       ? this.db.prepare('SELECT COUNT(*) AS n FROM http_events WHERE site = ?').get(site)
       : this.db.prepare('SELECT COUNT(*) AS n FROM http_events').get();
     return (row as { n: number }).n;
+  }
+
+  /** All distinct events for a site, in capture order — what the analysis pipeline iterates over. */
+  listBySite(site: string): HttpEventRow[] {
+    const rows = this.db.prepare('SELECT * FROM http_events WHERE site = ? ORDER BY id ASC').all(site) as {
+      method: string; url: string; status: number | null; content_type: string | null;
+      request_headers: string | null; response_headers: string | null; post_data: string | null; response_body: string | null;
+    }[];
+    return rows.map((r) => ({
+      method: r.method,
+      url: r.url,
+      status: r.status ?? undefined,
+      contentType: r.content_type ?? undefined,
+      requestHeaders: r.request_headers ? JSON.parse(r.request_headers) : {},
+      responseHeaders: r.response_headers ? JSON.parse(r.response_headers) : undefined,
+      postData: r.post_data ?? undefined,
+      responseBody: r.response_body ?? undefined,
+    }));
   }
 }
 

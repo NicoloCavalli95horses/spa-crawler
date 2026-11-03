@@ -79,6 +79,31 @@ describe('NetworkObserver', () => {
     assert.equal(observer.snapshot().stats.total, 2);
   });
 
+  it('still captures a request whose response stream was cancelled client-side (reported as failed, but a response did arrive)', async () => {
+    const page = await browser.open({ '/': '<p>app</p>' });
+    await page.route(`${APP_ORIGIN}/api/items`, (route) => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }),
+    }));
+    const observer = new NetworkObserver({ origin: APP_ORIGIN });
+    observer.attach(page);
+
+    // mirrors what a streaming consumer (e.g. Next.js's RSC router) does: read, then cancel before
+    // the stream naturally ends — Chrome reports this request as failed/aborted even though a real
+    // response (status/headers) was received.
+    await page.evaluate(async () => {
+      const res = await fetch('/api/items');
+      const reader = res.body!.getReader();
+      await reader.read();
+      await reader.cancel();
+    });
+    await waitUntil(() => observer.snapshot().requests.length === 1);
+
+    const { requests, stats } = observer.snapshot();
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].status, 200);
+    assert.equal(stats.failed, 0);   // not counted as a genuine failure: a response did arrive
+  });
+
   it('forwards every captured request to its HttpEventStore', async () => {
     const page = await browser.open({ '/': '<p>app</p>' });
     await page.route(`${APP_ORIGIN}/api/items`, (route) => route.fulfill({
