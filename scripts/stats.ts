@@ -1,66 +1,54 @@
 /**
- * Daemon that aggregates the statistics of the analyses in storage/sites/, even while they are running.
+ * Prints crawl and analysis-pipeline statistics, and flagged vulnerabilities, straight from the
+ * single SQLite file every store writes into — no daemon, no JSON files, nothing else to read.
  *
- *   npm run stats                        # one pass every 5s, Ctrl+C to stop
- *   npm run stats -- --once              # a single pass, then exit
- *   npm run stats -- --interval 10 --dir storage/sites
- *
- * Writes <dir>/_stats.json and prints a summary.
+ *   npm run stats
+ *   npm run stats -- --db storage/crawler.db
  */
-import { rename, writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { collect, EXTENSION_FIELDS, type Aggregate } from '../src/stats/aggregate';
-import { SITES_DIR } from '../src/state/output/FileOutput';
+import Database from 'better-sqlite3';
+import { AnalysisStatsStore, type AnalysisStatsRow } from '../src/db/AnalysisStatsStore';
+import { CrawlStateStore } from '../src/db/CrawlStateStore';
+import { CrawlEdgeStore } from '../src/db/CrawlEdgeStore';
+import { config } from '../src/config';
 
-const { values: args } = parseArgs({
-  options: {
-    dir: { type: 'string', default: SITES_DIR },
-    interval: { type: 'string', default: '5' },
-    once: { type: 'boolean', default: false },
-  },
+const { values: args } = parseArgs({ options: { db: { type: 'string', default: config.db.path } } });
+
+const NUMERIC_FIELDS = [
+  'httpEvents', 'segmentsExtracted', 'reactStates', 'matchesFound', 'candidatesFound', 'requestsGenerated', 'vulnerabilitiesFlagged',
+] as const satisfies readonly (keyof AnalysisStatsRow)[];
+
+const mean = (xs: number[]): number | null => (xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 100) / 100 : null);
+const fmt = (n: number | null): string => (n === null ? '-' : String(n));
+
+const db = new Database(args.db!, { readonly: true });
+const rows = new AnalysisStatsStore({ db, clearOnStart: false }).all();
+const crawlStates = new CrawlStateStore({ db, clearOnStart: false });
+const crawlEdges = new CrawlEdgeStore({ db, clearOnStart: false });
+
+console.log(`${rows.length} site(s) analysed, from ${args.db}`);
+console.table(rows.map((r) => ({
+  site: r.site,
+  states: crawlStates.count(r.site),
+  edges: crawlEdges.count(r.site),
+  ...Object.fromEntries(NUMERIC_FIELDS.map((f) => [f, r[f]])),
+})));
+
+console.log('\nAverage per site (where available):');
+console.table({
+  states: fmt(mean(rows.map((r) => crawlStates.count(r.site)))),
+  edges: fmt(mean(rows.map((r) => crawlEdges.count(r.site)))),
+  ...Object.fromEntries(NUMERIC_FIELDS.map((f) => [f, fmt(mean(rows.map((r) => r[f])))])),
 });
-const dir = args.dir!;
-const intervalSecs = Number(args.interval);
-if (!(intervalSecs > 0)) throw new Error(`--interval must be > 0, not "${args.interval}"`);
 
-const fmt = (n: number | null) => (n === null ? '-' : String(n));
+const vulnerabilities = db.prepare(`
+  SELECT site, reference_url, candidate_url, method, motivation, detection_method FROM vulnerabilities ORDER BY site ASC
+`).all() as { site: string; reference_url: string; candidate_url: string; method: string; motivation: string; detection_method: string }[];
 
-function print(agg: Aggregate): void {
-  console.clear();
-  console.log(
-    `[${agg.updatedAt}] ${agg.sites} analyses, ${agg.sitesWithExtension} with extension results, ` +
-    `${agg.sitesWithVulnerabilities} with potential vulnerabilities`,
-  );
-  console.table(agg.perSite.map((s) => ({
-    site: s.site, started: s.startedAt, states: s.states, edges: s.edges,
-    vulnerabilities: s.extension?.vulnerabilities ?? '-',
-    'react states': s.extension?.reactStatesSaved ?? '-',
-    'http events': s.extension?.httpEventsTracked ?? '-',
-    'requests generated': s.extension?.requestsGenerated ?? '-',
+if (vulnerabilities.length) {
+  console.log(`\n${vulnerabilities.length} flagged vulnerabilit${vulnerabilities.length === 1 ? 'y' : 'ies'}:`);
+  console.table(vulnerabilities.map((v) => ({
+    site: v.site, method: v.method, reference: v.reference_url, candidate: v.candidate_url,
+    detection: v.detection_method, 'ratio/motivation': v.motivation,
   })));
-  // states and edges over all sites, extension metrics only over the sites with extension results
-  console.table(Object.fromEntries((['states', 'edges', ...EXTENSION_FIELDS] as const).map((k) => [
-    k, { total: agg.totals[k], average: fmt(agg.averages[k]) },
-  ])));
-}
-
-async function tick(): Promise<void> {
-  const agg = await collect(dir);
-  await mkdir(dir, { recursive: true });
-  const out = join(dir, '_stats.json');
-  await writeFile(`${out}.tmp`, JSON.stringify(agg, null, 2));
-  await rename(`${out}.tmp`, out);
-  print(agg);
-}
-
-await tick();
-if (!args.once) {
-  // chained setTimeout: a slow pass never overlaps the next one
-  const loop = async (): Promise<void> => {
-    await new Promise((r) => setTimeout(r, intervalSecs * 1000));
-    await tick().catch((err) => console.error('Pass failed:', (err as Error).message));
-    void loop();
-  };
-  void loop();
 }

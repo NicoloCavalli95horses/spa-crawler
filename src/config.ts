@@ -84,8 +84,9 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   ignoreClickablesWithin: ['nav', 'header', 'footer'],
   // close blocking modals (Escape, then an explicit close control) before capturing a state
   dismissOverlays: true,
-  // deduplicated SQLite store the NetworkObserver/ReactStateHooks/AnalysisPipeline write into (shared by every tab/site in the run)
-  db: { path: 'storage/http-events.db', clearOnStart: true, clearClassifierCache: false },
+  // single SQLite file every store in the run writes into (crawl states/edges, HTTP events, React
+  // state, IDOR findings, stats, the authz classifier cache) — the only artifact the crawler produces
+  db: { path: 'storage/crawler.db', clearOnStart: true, clearClassifierCache: false },
   // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline; always on
   analysis: { maxConcurrentRequests: 3, timeBetweenRequestsMs: 800 },
   // Chrome extension: call results end up in the KeyValueStore as

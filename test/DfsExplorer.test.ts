@@ -1,24 +1,42 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { DfsExplorer, type ExplorationLimits } from '../src/core/DfsExplorer';
 import { StateNavigator } from '../src/browser/StateNavigator';
 import { StateStore } from '../src/state/StateStore';
 import { StateGraph } from '../src/state/StateGraph';
+import { CrawlStateStore } from '../src/db/CrawlStateStore';
+import { CrawlEdgeStore } from '../src/db/CrawlEdgeStore';
 import type { IStateCapturer } from '../src/core/interfaces';
-import { FakeApp, FakeTabs, MemoryOutput, noWait } from './helpers/fakes';
+import { FakeApp, FakeTabs, noWait } from './helpers/fakes';
+
+let root: string;
+before(async () => { root = await mkdtemp(join(tmpdir(), 'crawler-test-')); });
+after(async () => { await rm(root, { recursive: true, force: true }); });
+
+const SITE = 'app.test';
+let n = 0;
+function newPersistence(): { crawlStates: CrawlStateStore; crawlEdges: CrawlEdgeStore } {
+  const db = new Database(join(root, `${n++}.db`));
+  return { crawlStates: new CrawlStateStore({ db, clearOnStart: false }), crawlEdges: new CrawlEdgeStore({ db, clearOnStart: false }) };
+}
 
 /** Real engine (navigator, store, graph) on a simulated app. */
 function run(app: FakeApp, limits: Partial<ExplorationLimits> = {}, capturer?: IStateCapturer) {
-  const out = new MemoryOutput();
+  const { crawlStates, crawlEdges } = newPersistence();
   const cap = capturer ?? app.capturer();
   const executor = app.executor();
   const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
-  const store = new StateStore({ screenshots: false }, out);
-  const graph = new StateGraph(out);
+  const store = new StateStore({ screenshots: false }, SITE, crawlStates);
+  const graph = new StateGraph(SITE, crawlEdges);
   const explorer = new DfsExplorer(noWait, executor, cap, navigator, store, graph,
     { maxDepth: 10, maxStates: 1000, maxDurationSecs: 3600, ...limits });
-  const saved = () => out.states.map((s) => s.id).sort();
-  return { explorer, out, graph, saved, explore: () => explorer.explore(app.page()) };
+  const states = () => crawlStates.listBySite(SITE);
+  const saved = () => states().map((s) => s.id).sort();
+  return { explorer, crawlStates, crawlEdges, graph, saved, states, explore: () => explorer.explore(app.page()) };
 }
 
 describe('DfsExplorer', () => {
@@ -46,7 +64,7 @@ describe('DfsExplorer', () => {
     const app = new FakeApp({ S0: { a: 'S1' }, S1: { b: 'S2' }, S2: {} });
     const r = run(app);
     await r.explore();
-    const s2 = r.out.states.find((s) => s.id === 'S2')!;
+    const s2 = r.states().find((s) => s.id === 'S2')!;
     assert.equal(s2.depth, 2);
     assert.deepEqual(s2.path.map((p) => p.targetId), ['a', 'b']);
   });
@@ -71,7 +89,7 @@ describe('DfsExplorer', () => {
     const app = new FakeApp({ S0: { a: 'S1', b: 'S2', c: 'S3' }, S1: {}, S2: {}, S3: {} });
     const r = run(app, { maxStates: 2 });
     await r.explore();
-    assert.equal(r.out.states.length, 2);
+    assert.equal(r.states().length, 2);
   });
 
   it('stops when the time budget is exhausted', async () => {
@@ -93,12 +111,11 @@ describe('DfsExplorer', () => {
     const broken: IStateCapturer = { capture: async () => { throw new Error('pagina rotta'); } };
     const r = run(app, {}, broken);
     await assert.rejects(r.explore(), /pagina rotta/);
-    assert.ok(r.out.json.has('state-graph'));
   });
 
   it('calls beforeAction before each click and afterAction on each result', async () => {
     const app = new FakeApp({ S0: { a: 'S1', b: 'S2' }, S1: {}, S2: {} });
-    const out = new MemoryOutput();
+    const { crawlStates, crawlEdges } = newPersistence();
     const cap = app.capturer();
     const executor = app.executor();
     const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
@@ -110,7 +127,8 @@ describe('DfsExplorer', () => {
       afterAction: async () => { order.push('after'); },
     };
     const explorer = new DfsExplorer(
-      noWait, executor, cap, navigator, new StateStore({ screenshots: false }, out), new StateGraph(out),
+      noWait, executor, cap, navigator,
+      new StateStore({ screenshots: false }, SITE, crawlStates), new StateGraph(SITE, crawlEdges),
       { maxDepth: 10, maxStates: 1000, maxDurationSecs: 3600 }, hooks,
     );
 
@@ -118,7 +136,7 @@ describe('DfsExplorer', () => {
 
     // S0 has two clickables (S1, S2 have none): each click is wrapped before -> after, in order
     assert.deepEqual(order, ['before', 'after', 'before', 'after']);
-    assert.deepEqual(out.states.map((s) => s.id).sort(), ['S0', 'S1', 'S2']);
+    assert.deepEqual(crawlStates.listBySite(SITE).map((s) => s.id).sort(), ['S0', 'S1', 'S2']);
   });
 
   describe('multiple tabs', () => {
@@ -131,22 +149,22 @@ describe('DfsExplorer', () => {
     };
 
     function runTabs(tabs: FakeTabs, limits: Partial<ExplorationLimits> = {}) {
-      const out = new MemoryOutput();
+      const { crawlStates, crawlEdges } = newPersistence();
       const cap = tabs.capturer();
       const executor = tabs.executor();
       const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
       const explorer = new DfsExplorer(noWait, executor, cap, navigator,
-        new StateStore({ screenshots: false }, out), new StateGraph(out),
+        new StateStore({ screenshots: false }, SITE, crawlStates), new StateGraph(SITE, crawlEdges),
         { maxDepth: 10, maxStates: 1000, maxDurationSecs: 3600, ...limits });
       const [first, ...rest] = tabs.pages();
-      return { out, explore: () => explorer.explore(first, rest) };
+      return { crawlStates, explore: () => explorer.explore(first, rest) };
     }
 
     it('find the same states as a single tab, without saving any twice', async () => {
       const tabs = new FakeTabs(GRAPH, 3);
       const r = runTabs(tabs);
       await r.explore();
-      const ids = r.out.states.map((s) => s.id).sort();
+      const ids = r.crawlStates.listBySite(SITE).map((s) => s.id).sort();
       assert.deepEqual(ids, ['S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7']);
     });
 
@@ -162,22 +180,23 @@ describe('DfsExplorer', () => {
       const tabs = new FakeTabs(GRAPH, 2);
       const r = runTabs(tabs, { maxStates: 2 });
       await r.explore();
-      assert.ok(r.out.states.length <= 4, `saved ${r.out.states.length}`);
-      assert.ok(r.out.states.length > 2, 'with two tabs we go past the cap of a single one');
+      const count = r.crawlStates.count(SITE);
+      assert.ok(count <= 4, `saved ${count}`);
+      assert.ok(count > 2, 'with two tabs we go past the cap of a single one');
     });
 
     it('respect the maximum depth', async () => {
       const tabs = new FakeTabs(GRAPH, 3);
       const r = runTabs(tabs, { maxDepth: 1 });
       await r.explore();
-      assert.deepEqual(r.out.states.map((s) => s.id).sort(), ['S0', 'S1', 'S2', 'S3']);
+      assert.deepEqual(r.crawlStates.listBySite(SITE).map((s) => s.id).sort(), ['S0', 'S1', 'S2', 'S3']);
     });
 
     it('terminate even when there are more tabs than work', async () => {
       const tabs = new FakeTabs({ S0: { a: 'S1' }, S1: {} }, 5);
       const r = runTabs(tabs);
       await r.explore();
-      assert.deepEqual(r.out.states.map((s) => s.id).sort(), ['S0', 'S1']);
+      assert.deepEqual(r.crawlStates.listBySite(SITE).map((s) => s.id).sort(), ['S0', 'S1']);
     });
   });
 });

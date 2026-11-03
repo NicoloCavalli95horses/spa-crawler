@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Page } from 'playwright';
 import { log } from 'crawlee';
-import type { IExplorationHooks, IOutputSink } from '../core/interfaces';
+import type { IExplorationHooks } from '../core/interfaces';
 import type { ExtensionConfig } from '../config';
 import { evaluateInPage } from './evaluateInPage';
 
@@ -16,14 +16,16 @@ export function extensionLaunchArgs(extension: ExtensionConfig): string[] {
 }
 
 /**
- * Calls the `window.*` functions exposed by the extension at the start and end of the exploration
- * and saves the returned value (JSON) next to the site's other results.
- * An extension error never interrupts the exploration.
+ * Calls the `window.*` functions exposed by the extension at the start and end of the exploration.
+ * An extension error never interrupts the exploration; results are only logged, not persisted — the
+ * crawler's own SQLite stores (NetworkObserver/ReactStateHooks/AnalysisPipeline) are the source of
+ * truth for anything worth keeping, and a getData-style result from RAPIDOR's own `mode: 'minimal'`
+ * carries nothing but runtime-error logs to surface anyway.
  */
 interface HandshakeStats { total: number; ready: number; notReady: number; unavailable: number }
 
 export class ExtensionCalls implements IExplorationHooks {
-  // how often each handshake found the page ready vs not (saved with the results at the end)
+  // how often each handshake found the page ready vs not (logged at the end)
   private stats: Record<'before-action' | 'after-action', HandshakeStats> = {
     'before-action': { total: 0, ready: 0, notReady: 0, unavailable: 0 },
     'after-action': { total: 0, ready: 0, notReady: 0, unavailable: 0 },
@@ -31,7 +33,6 @@ export class ExtensionCalls implements IExplorationHooks {
 
   constructor(
     private extension: ExtensionConfig,
-    private output: IOutputSink,
     private timeoutMs: number,
   ) {}
 
@@ -39,17 +40,16 @@ export class ExtensionCalls implements IExplorationHooks {
 
   async onEnd(page: Page): Promise<void> {
     await this.run(page, 'end');
-    await this.saveHandshakeStats('before-action', 'wait-to-action');
-    await this.saveHandshakeStats('after-action', 'wait-for-analysis');
+    this.logHandshakeStats('before-action', 'wait-to-action');
+    this.logHandshakeStats('after-action', 'wait-for-analysis');
   }
 
   beforeAction(page: Page): Promise<void> { return this.handshake(page, 'before-action'); }
   afterAction(page: Page): Promise<void> { return this.handshake(page, 'after-action'); }
 
-  private async saveHandshakeStats(when: 'before-action' | 'after-action', label: string): Promise<void> {
+  private logHandshakeStats(when: 'before-action' | 'after-action', label: string): void {
     const s = this.stats[when];
     if (s.total === 0) return;
-    await this.output.saveJson(`${when}-stats`, s);
     log.info(`${label}: ${s.ready}/${s.total} ready, ${s.notReady} not ready, ${s.unavailable} unavailable`);
   }
 
@@ -97,8 +97,6 @@ export class ExtensionCalls implements IExplorationHooks {
           ({ fn, args }) => (window as unknown as Record<string, (...a: unknown[]) => unknown>)[fn](...args),
           { fn: call.fn, args: call.args ?? [] },
         );
-        // KeyValueStore keys only allow [a-zA-Z0-9!-_.'()]
-        await this.output.saveJson(`extension-${when}-${call.fn.replace(/[^\w!.'()-]/g, '_')}`, value ?? null);
         log.info(`Extension: window.${call.fn}() called (${when})`);
         this.reportRuntimeErrors(value);
       } catch (err) {

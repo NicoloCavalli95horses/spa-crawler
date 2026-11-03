@@ -9,8 +9,9 @@ import { parseArgs } from 'node:util';
 import { KeyValueStore, log } from 'crawlee';
 import { runCrawler } from '../src/main';
 import { config, type CrawlConfig } from '../src/config';
-import { collect, type SiteStats } from '../src/stats/aggregate';
-import { SITES_DIR } from '../src/state/output/FileOutput';
+import { openDatabase } from '../src/db/openDatabase';
+import { CrawlStateStore } from '../src/db/CrawlStateStore';
+import { VulnerabilityStore } from '../src/db/VulnerabilityStore';
 
 const TRANCO = 'https://tranco-list.eu';
 
@@ -78,18 +79,19 @@ const stats = await runCrawler(entries.map((e, i) => ({
   userData: { progress: `[${i + 1}/${entries.length}] #${e.rank}` },
 })), cfg);
 
-// per-site summary, also saved next to the results
-// folders sorted by name: for each site the last analysis is the one from this run
-const bySite = new Map<string, SiteStats>();
-for (const s of (await collect(SITES_DIR)).perSite) bySite.set(s.site, s);
+// per-site summary, also saved next to the results — read straight from the same SQLite file every
+// store in this run just wrote into (see src/db/)
+const db = openDatabase({ path: cfg.db.path });
+const crawlStates = new CrawlStateStore({ db, clearOnStart: false });
+const vulnerabilityStore = new VulnerabilityStore({ db, clearOnStart: false });
 
 const summary = {
   listId,
   start,
   domains,
   limits: { maxDepth: cfg.maxDepth, maxStates: cfg.maxStates, maxDurationSecs: cfg.maxDurationSecs },
-  statesBySite: Object.fromEntries(domains.map((d) => [d, bySite.get(d)?.states ?? 0])),
-  vulnerabilitiesBySite: Object.fromEntries(domains.map((d) => [d, bySite.get(d)?.extension?.vulnerabilities ?? null])),
+  statesBySite: Object.fromEntries(domains.map((d) => [d, crawlStates.count(d)])),
+  vulnerabilitiesBySite: Object.fromEntries(domains.map((d) => [d, vulnerabilityStore.count(d)])),
   requestsFinished: stats.requestsFinished,
   requestsFailed: stats.requestsFailed,
 };
@@ -97,7 +99,7 @@ await KeyValueStore.setValue('tranco-summary', summary);
 
 console.table(entries.map((e) => ({
   rank: e.rank, domain: e.domain,
-  states: bySite.get(e.domain)?.states ?? 0,
-  vulnerabilities: bySite.get(e.domain)?.extension?.vulnerabilities ?? '-',
+  states: crawlStates.count(e.domain),
+  vulnerabilities: vulnerabilityStore.count(e.domain),
 })));
 console.log(`Finished: ${stats.requestsFinished}, failed: ${stats.requestsFailed}`);

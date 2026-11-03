@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ExtensionCalls, extensionLaunchArgs } from '../src/browser/ExtensionCalls';
 import { useBrowser } from './helpers/browser';
-import { MemoryOutput } from './helpers/fakes';
 
 const { withHtml } = useBrowser();
 
@@ -15,22 +14,16 @@ describe('ExtensionCalls', () => {
       { fn: 'missing', when: 'end' as const },
     ],
   };
-  const html = '<script>window.getData = async (s) => ({ ok: "y" + s })</script>';
+  const html = '<script>window.calls = []; window.getData = async (s) => { window.calls.push(`getData:${s}`); return { ok: `y${s}` }; }</script>';
 
-  it('calls only the functions for the requested moment and saves the result', async () => {
-    const out = new MemoryOutput();
-    const calls = new ExtensionCalls(extension, out, 200);
+  it('calls only the functions for the requested moment, with their args', async () => {
     const page = await withHtml(html);
-
-    await calls.onEnd(page);
-
-    assert.deepEqual([...out.json], [['extension-end-getData', { ok: 'y!' }]]);
+    await new ExtensionCalls(extension, 200).onEnd(page);
+    assert.deepEqual(await page.evaluate(() => (window as unknown as { calls: string[] }).calls), ['getData:!']);
   });
 
   it('a missing function does not throw: it is just skipped', async () => {
-    const out = new MemoryOutput();
-    await new ExtensionCalls(extension, out, 200).onStart(await withHtml(html));
-    assert.equal(out.json.size, 0);
+    await new ExtensionCalls(extension, 200).onStart(await withHtml(html));   // 'api.start' isn't defined: must not throw
   });
 
   it('extensionLaunchArgs rejects folders without manifest.json', () => {
@@ -44,34 +37,19 @@ describe('ExtensionCalls', () => {
       calls: [{ fn: '__waitToAction', when: 'before-action' as const, args: [{ t: 1 }] }],
     };
 
-    it('counts ready / not-ready results and saves a summary at the end', async () => {
-      const out = new MemoryOutput();
-      const calls = new ExtensionCalls(withWait, out, 200);
-      // returns true (ready) on the first call, false (not ready) on the second
-      const page = await withHtml('<script>let n = 0; window.__waitToAction = () => n++ === 0</script>');
+    it('calls the handshake function on every invocation, ready or not, and never throws', async () => {
+      const calls = new ExtensionCalls(withWait, 200);
+      const page = await withHtml('<script>window.n = 0; window.__waitToAction = () => window.n++ === 0</script>');
 
-      await calls.beforeAction(page);
-      await calls.beforeAction(page);
-      await calls.onEnd(page);
+      await calls.beforeAction(page);   // ready (n=0 -> true)
+      await calls.beforeAction(page);   // not ready (n=1 -> false)
+      await calls.onEnd(page);          // must not throw either
 
-      assert.deepEqual(out.json.get('before-action-stats'), { total: 2, ready: 1, notReady: 1, unavailable: 0 });
+      assert.equal(await page.evaluate(() => (window as unknown as { n: number }).n), 2);
     });
 
-    it('does not throw or block when the function is absent (counts it as unavailable)', async () => {
-      const out = new MemoryOutput();
-      const calls = new ExtensionCalls(withWait, out, 200);
-      const page = await withHtml('<p>no extension here</p>');
-
-      await calls.beforeAction(page);   // must resolve, not hang or throw
-      await calls.onEnd(page);
-
-      assert.deepEqual(out.json.get('before-action-stats'), { total: 1, ready: 0, notReady: 0, unavailable: 1 });
-    });
-
-    it('is a no-op when no before-action call is configured', async () => {
-      const out = new MemoryOutput();
-      await new ExtensionCalls(extension, out, 200).beforeAction(await withHtml(html));
-      assert.equal(out.json.has('before-action-stats'), false);
+    it('does not throw or block when the function is absent (counted as unavailable)', async () => {
+      await new ExtensionCalls(withWait, 200).beforeAction(await withHtml('<p>no extension here</p>'));   // must resolve, not hang or throw
     });
   });
 
@@ -81,26 +59,18 @@ describe('ExtensionCalls', () => {
       calls: [{ fn: '__waitForAnalysis', when: 'after-action' as const, args: [{ timeoutMs: 1 }] }],
     };
 
-    it('runs after-action calls on the result page and saves its own summary', async () => {
-      const out = new MemoryOutput();
-      const calls = new ExtensionCalls(withAnalysis, out, 200);
-      // true = analysis idle, false = timed out
-      const page = await withHtml('<script>let n = 0; window.__waitForAnalysis = () => n++ > 0</script>');
+    it('runs after-action calls on the result page', async () => {
+      const calls = new ExtensionCalls(withAnalysis, 200);
+      const page = await withHtml('<script>window.n = 0; window.__waitForAnalysis = () => window.n++ > 0</script>');
 
       await calls.afterAction(page);   // first: not idle
       await calls.afterAction(page);   // second: idle
-      await calls.onEnd(page);
 
-      assert.deepEqual(out.json.get('after-action-stats'), { total: 2, ready: 1, notReady: 1, unavailable: 0 });
-      assert.equal(out.json.has('before-action-stats'), false);   // kept separate from before-action
+      assert.equal(await page.evaluate(() => (window as unknown as { n: number }).n), 2);
     });
 
     it('does not throw when the function is absent', async () => {
-      const out = new MemoryOutput();
-      const calls = new ExtensionCalls(withAnalysis, out, 200);
-      await calls.afterAction(await withHtml('<p>nothing here</p>'));
-      await calls.onEnd(await withHtml('<p>nothing here</p>'));
-      assert.deepEqual(out.json.get('after-action-stats'), { total: 1, ready: 0, notReady: 0, unavailable: 1 });
+      await new ExtensionCalls(withAnalysis, 200).afterAction(await withHtml('<p>nothing here</p>'));
     });
   });
 });

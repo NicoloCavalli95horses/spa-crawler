@@ -11,6 +11,8 @@ import { ReactStateStore } from './db/ReactStateStore';
 import { PreindexedValueStore } from './db/PreindexedValueStore';
 import { VulnerabilityStore } from './db/VulnerabilityStore';
 import { AnalysisStatsStore } from './db/AnalysisStatsStore';
+import { CrawlStateStore } from './db/CrawlStateStore';
+import { CrawlEdgeStore } from './db/CrawlEdgeStore';
 import { AuthzClassificationStore } from './db/AuthzClassificationStore';
 import { AuthzClassifier } from './analysis/authzClassifier';
 import { openDatabase } from './db/openDatabase';
@@ -69,13 +71,17 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   const preindexStore = new PreindexedValueStore({ db, clearOnStart: cfg.db.clearOnStart });
   const vulnerabilityStore = new VulnerabilityStore({ db, clearOnStart: cfg.db.clearOnStart });
   const statsStore = new AnalysisStatsStore({ db, clearOnStart: cfg.db.clearOnStart });
+  // the exploration's own output (states/edges), replacing the old states.json/state-graph.json
+  const crawlStates = new CrawlStateStore({ db, clearOnStart: cfg.db.clearOnStart });
+  const crawlEdges = new CrawlEdgeStore({ db, clearOnStart: cfg.db.clearOnStart });
   // classifications are a pure function of the key string, independent of site/run: kept across
   // runs by default (its own clearClassifierCache flag, not the main clearOnStart)
   const classificationStore = new AuthzClassificationStore({ db, clearOnStart: cfg.db.clearClassifierCache });
   // shared across every site in this run: the embedding model loads once and its in-memory L1 cache carries over
   const classifier = new AuthzClassifier(classificationStore);
   const deps: Omit<ObservabilityDeps, 'network'> = {
-    reactState: reactStateStore, preindex: preindexStore, httpEventStore, vulnerabilityStore, statsStore, classifier,
+    reactState: reactStateStore, preindex: preindexStore, httpEventStore, vulnerabilityStore, statsStore,
+    crawlStates, crawlEdges, classifier,
   };
   return new PlaywrightCrawler({
     // each site has its own page (more tabs with tabsPerSite) and its own explorer: sites can run in parallel

@@ -1,18 +1,14 @@
-import type { IOutputSink, IStateGraph } from '../core/interfaces';
-import type { Action } from '../core/types';
+import type { IStateGraph } from '../core/interfaces';
+import type { Action, Edge } from '../core/types';
+import type { CrawlEdgeStore } from '../db/CrawlEdgeStore';
 
-export interface Edge {
-  from: string;
-  to: string;
-  action: { type: Action['type']; targetId: string; text?: string; selector: string };
-}
-
-/** In-memory state -> action -> state graph, saved as JSON through the sink. */
+/** In-memory state -> action -> state graph; persisted to SQLite incrementally (only new edges). */
 export class StateGraph implements IStateGraph {
   private edges: Edge[] = [];
   private keys = new Set<string>();
+  private persistedCount = 0;
 
-  constructor(private output: IOutputSink, private storeKey = 'state-graph') {}
+  constructor(private site: string, private persistent: CrawlEdgeStore) {}
 
   addEdge(from: string, action: Action, to: string): void {
     const key = `${from}|${action.type}|${action.target.id}|${to}`;
@@ -39,6 +35,9 @@ export class StateGraph implements IStateGraph {
   }
 
   async persist(): Promise<void> {
-    await this.output.saveJson(this.storeKey, { edges: this.edges });
+    const newEdges = this.edges.slice(this.persistedCount);
+    if (newEdges.length === 0) return;
+    this.persistent.recordMany({ site: this.site, edges: newEdges });
+    this.persistedCount = this.edges.length;
   }
 }

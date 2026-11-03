@@ -1,9 +1,9 @@
 import type { Page } from 'playwright';
 import { log } from 'crawlee';
 import type {
-  IActionExecutor, IOutputSink, IStabilityWaiter, IStateCapturer,
+  IActionExecutor, IStabilityWaiter, IStateCapturer,
 } from '../../src/core/interfaces';
-import type { Action, ElementDescriptor, Snapshot, StateRecord } from '../../src/core/types';
+import type { Action, ElementDescriptor, Snapshot } from '../../src/core/types';
 
 log.setLevel(log.LEVELS.OFF);   // no noise from the engine logs during tests
 
@@ -12,17 +12,6 @@ export function descriptor(id: string, extra: Partial<ElementDescriptor> = {}): 
     id, selector: `#${id}`, tag: 'button', fixed: false, text: id,
     rect: { x: 0, y: 0, width: 10, height: 10 }, ...extra,
   };
-}
-
-/** In-memory sink: lets tests inspect what the engine would have saved. */
-export class MemoryOutput implements IOutputSink {
-  states: StateRecord[] = [];
-  files = new Map<string, { data: Buffer; contentType: string }>();
-  json = new Map<string, unknown>();
-
-  async saveState(record: StateRecord) { this.states.push(record); }
-  async saveFile(key: string, data: Buffer, contentType: string) { this.files.set(key, { data, contentType }); return key; }
-  async saveJson(key: string, value: unknown) { this.json.set(key, value); }
 }
 
 /**

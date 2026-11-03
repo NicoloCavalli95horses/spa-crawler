@@ -1,16 +1,17 @@
 import type { Page } from 'playwright';
 import { log } from 'crawlee';
-import type { IOutputSink, IStateStore } from '../core/interfaces';
+import type { IStateStore } from '../core/interfaces';
 import type { UIState } from '../core/types';
+import type { CrawlStateStore } from '../db/CrawlStateStore';
 
 export interface StateStoreOptions { screenshots: boolean }
 
-/** Seen states and already explored (state, element) pairs, in memory; results go to the sink. */
+/** Seen states and already explored (state, element) pairs, in memory; full records go to SQLite. */
 export class StateStore implements IStateStore {
   private states = new Set<string>();
   private explored = new Set<string>();
 
-  constructor(private opts: StateStoreOptions, private output: IOutputSink) {}
+  constructor(private opts: StateStoreOptions, private site: string, private persistent: CrawlStateStore) {}
 
   has(id: string): boolean {
     return this.states.has(id);
@@ -24,23 +25,26 @@ export class StateStore implements IStateStore {
     if (this.states.has(state.id)) return;
     this.states.add(state.id);   // before any await: the state counts as "seen" even if saving fails
 
-    let screenshotKey: string | undefined;
+    let screenshot: Buffer | undefined;
     if (this.opts.screenshots) {
       try {
-        screenshotKey = await this.output.saveFile(`state-${state.id}`, await page.screenshot(), 'image/png');
+        screenshot = await page.screenshot();
       } catch (err) {
         log.warning(`Screenshot of state ${state.id} failed: ${(err as Error).message}`);
       }
     }
 
-    await this.output.saveState({
-      id: state.id,
-      url: state.url,
-      depth: state.depth,
-      path: state.path.map((a) => ({ type: a.type, targetId: a.target.id, text: a.target.text })),
-      clickables: state.clickables,
-      texts: state.texts,
-      screenshotKey,
+    this.persistent.record({
+      site: this.site,
+      record: {
+        id: state.id,
+        url: state.url,
+        depth: state.depth,
+        path: state.path.map((a) => ({ type: a.type, targetId: a.target.id, text: a.target.text })),
+        clickables: state.clickables,
+        texts: state.texts,
+      },
+      screenshot,
     });
   }
 

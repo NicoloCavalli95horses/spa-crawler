@@ -8,8 +8,7 @@
     "typecheck": "tsc",
     "test": "node --import tsx --test test/*.test.ts",
     "tranco": "tsx scripts/tranco.ts",
-    "stats": "tsx scripts/stats.ts",
-    "analysis-stats": "tsx scripts/analysisStats.ts"
+    "stats": "tsx scripts/stats.ts"
   },
   "keywords": [],
   "author": "",

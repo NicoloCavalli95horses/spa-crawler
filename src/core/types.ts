@@ -25,7 +25,7 @@ export interface UIState extends Snapshot {
   path: Action[];      // actions from the root: used for restoring
 }
 
-/** What gets saved for each state. */
+/** What gets persisted for each state. */
 export interface StateRecord {
   id: string;
   url: string;
@@ -33,5 +33,11 @@ export interface StateRecord {
   path: { type: Action['type']; targetId: string; text?: string }[];
   clickables: ElementDescriptor[];
   texts: string[];
-  screenshotKey?: string;
+}
+
+/** A click edge in the state graph. */
+export interface Edge {
+  from: string;
+  to: string;
+  action: { type: Action['type']; targetId: string; text?: string; selector: string };
 }

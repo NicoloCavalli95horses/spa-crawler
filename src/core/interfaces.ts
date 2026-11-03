@@ -1,5 +1,5 @@
 import type { Page } from 'playwright';
-import type { Action, ElementDescriptor, Snapshot, StateRecord, UIState } from './types.js';
+import type { Action, ElementDescriptor, Snapshot, UIState } from './types.js';
 
 export interface IClickableExtractor { extract(page: Page): Promise<ElementDescriptor[]> }
 export interface IPageTextExtractor { extract(page: Page): Promise<string[]> }
@@ -26,14 +26,6 @@ export interface IStateGraph {
   addEdge(from: string, a: Action, to: string): void;
   edgeCount(): number;
   persist(): Promise<void>;
-}
-
-/** Where results end up. In production Crawlee, in tests an in-memory sink. */
-export interface IOutputSink {
-  saveState(record: StateRecord): Promise<void>;
-  /** Returns the actual key under which the file was saved. */
-  saveFile(key: string, data: Buffer, contentType: string): Promise<string>;
-  saveJson(key: string, value: unknown): Promise<void>;
 }
 
 /** Points where external code (e.g. a browser extension) observes the exploration. */

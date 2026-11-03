@@ -25,8 +25,8 @@ USER_DATA_DIR=$HOME/.crawler-profile DEBUG_NO_CRAWLING=true HEADLESS=false npm s
 npm run tranco -- --top 10 --depth 2
 npm run tranco -- --start 50 --top 5
 
-# IDOR findings + per-site stats from the last run(s), straight from SQLite
-npm run analysis-stats
+# crawl states/edges + IDOR findings + per-site stats from the last run(s), straight from SQLite
+npm run stats
 
 # tests (run with a real browser)
 npm test
@@ -35,7 +35,7 @@ npm test
 npm run typecheck
 ```
 
-Crawl output (states/graph) is saved in `storage/sites/`; HTTP traffic, React state, and IDOR findings live in `storage/http-events.db` (SQLite) — see [Output](#output).
+Everything the crawler produces — crawl states/edges, HTTP traffic, React state, IDOR findings, stats — lives in one SQLite file, `storage/crawler.db` — see [Output](#output).
 
 ## How It Works
 
@@ -50,7 +50,7 @@ a **click** is performed, it waits for stability, and the resulting state is cap
 The visit stops when reaching `maxDepth`, `maxStates`, or `maxDurationSecs`:
 termination is guaranteed even on very rich UIs. An error on an element only costs its own branch.
 
-While this happens, three more things run unconditionally for every site (no feature flags to toggle them off — see [IDOR analysis](#idor-analysis-authzidor-detection)):
+While this happens, three more things run unconditionally for every site (see [IDOR analysis](#idor-analysis-authzidor-detection)):
 
 * **`NetworkObserver`** captures same-site `fetch`/XHR traffic directly via Playwright (`page.on('requestfinished'/'requestfailed')`), deduplicated into `http_events`.
 * **`ReactStateHooks`** reads `window.__RAPIDOR__getLatestState()` (exposed by the RAPIDOR extension, see below) after each action and persists it into `react_states`, immediately re-indexing the interesting prop values it contains (`preindexed_values`).
@@ -69,12 +69,12 @@ While this happens, three more things run unconditionally for every site (no fea
 | [src/state/StateFingerprinter.ts](src/state/StateFingerprinter.ts) | State ID: hash of the sorted set of clickables, plus URL and texts if active. |
 | [src/browser/StateNavigator.ts](src/browser/StateNavigator.ts) | Restores a state by reloading the root and replaying the click path. If the ID does not match, the UI is non-deterministic and the branch is skipped. |
 | [src/browser/ActionExecutor.ts](src/browser/ActionExecutor.ts) | Clicks at the element's coordinates. Closes dialogs and popups, blocks navigation to other origins. |
-| [src/state/StateStore.ts](src/state/StateStore.ts), [src/state/StateGraph.ts](src/state/StateGraph.ts) | Seen states, already explored (state, element) pairs, graph edges. |
+| [src/state/StateStore.ts](src/state/StateStore.ts), [src/state/StateGraph.ts](src/state/StateGraph.ts) | Seen states (in-memory) and already explored (state, element) pairs; persist full records via [src/db/CrawlStateStore.ts](src/db/CrawlStateStore.ts)/[src/db/CrawlEdgeStore.ts](src/db/CrawlEdgeStore.ts). |
 | [src/browser/NetworkObserver.ts](src/browser/NetworkObserver.ts) | Shadow capture of same-site HTTP traffic (see above), persisted via [src/db/HttpEventStore.ts](src/db/HttpEventStore.ts). |
 | [src/browser/ReactStateHooks.ts](src/browser/ReactStateHooks.ts) | Reads and persists RAPIDOR's React state ([src/db/ReactStateStore.ts](src/db/ReactStateStore.ts)) and pre-indexes it ([src/db/PreindexedValueStore.ts](src/db/PreindexedValueStore.ts)). |
 | [src/analysis/AnalysisPipeline.ts](src/analysis/AnalysisPipeline.ts) | The preindex → match → forge → evaluate chain; see [IDOR analysis](#idor-analysis-authzidor-detection). |
 | [scripts/tranco.ts](scripts/tranco.ts) | Runs the crawler on N domains from the [Tranco list](https://tranco-list.eu), starting from rank P (`--start`, default 1). |
-| [scripts/analysisStats.ts](scripts/analysisStats.ts) | Prints per-site IDOR stats, cross-site averages, and flagged findings from `storage/http-events.db`. |
+| [scripts/stats.ts](scripts/stats.ts) | Prints per-site crawl/IDOR stats, cross-site averages, and flagged findings from `storage/crawler.db`. |
 
 ### Design Choices
 
@@ -84,7 +84,7 @@ While this happens, three more things run unconditionally for every site (no fea
 * **Several tabs per site.** With `tabsPerSite > 1` each tab runs its own depth-first search over the shared state store and graph. `markExplored` is synchronous, so the first tab to reach a (state, element) pair claims it; a tab that runs out of work picks up unexplored elements from other tabs' states. Exploration is therefore not deterministic. Tabs need the persistent browser context (as with the extension or a saved profile).
 * **HTTP cache stays on.** Playwright's `page.route` disables Chromium's HTTP cache, so every restore would re-download all scripts and styles. External navigations are blocked through a CDP `Fetch` interception limited to documents instead, and the browser cache works as for a normal user.
 * **Always in English.** The browser declares the `en-US` locale (both `navigator.language` and the `Accept-Language` header). Multilingual sites therefore respond in English, and saved texts remain comparable with the `blocklist`. Exceptions remain possible for sites that choose the language based on IP.
-* **SQLite, not JSON, for anything the analysis pipeline produces.** Captured HTTP events, React state, pre-indexed values, flagged vulnerabilities, per-site stats, and the authorization classifier's cache all live in `storage/http-events.db`. It is the single source of truth: no artifact dump duplicates it, and later runs can query/average across sites trivially.
+* **SQLite, not JSON, for everything the crawler produces.** Crawl states and edges (screenshots included, as BLOBs), captured HTTP events, React state, pre-indexed values, flagged vulnerabilities, per-site stats, and the authorization classifier's cache all live in one file, `storage/crawler.db`. It is the single source of truth: no artifact dump duplicates it, and later runs can query/average across sites trivially.
 
 ## Configuration
 
@@ -106,14 +106,14 @@ Everything is in [src/config.ts](src/config.ts). The most important settings:
 | `locale` | `en-US` | Language requested from sites. |
 | `screenshots` | `false` | Saves a PNG of each state. Useful only for visually inspecting results. |
 | `blocklist` | `logout, log out, sign out, quit, delete` | Substrings (case-insensitive) of text, `aria-label`, or `href` of elements that should never be clicked. |
-| `db.path` | `storage/http-events.db` | Shared SQLite file for the whole run. |
-| `db.clearOnStart` | `true` | Wipes `http_events`/`react_states`/`preindexed_values`/`vulnerabilities`/`analysis_stats` once at the start of the run. |
+| `db.path` | `storage/crawler.db` | Shared SQLite file for the whole run — every table the crawler writes. |
+| `db.clearOnStart` | `true` | Wipes `crawl_states`/`crawl_edges`/`http_events`/`react_states`/`preindexed_values`/`vulnerabilities`/`analysis_stats` once at the start of the run. |
 | `db.clearClassifierCache` | `false` | Wipes `authz_classifications` too. Off by default: a classification is a pure function of the key string, independent of site or run, so it is worth keeping forever. |
 | `analysis.maxConcurrentRequests` / `analysis.timeBetweenRequestsMs` | `3` / `800` | Bound and pace forged requests, mirroring RAPIDOR's own `config.js` defaults. |
 
 ## Authentication (protected areas)
 
-There is no way to feed credentials in through environment variables, config, or a `.env` file — a token/cookie copied into a file is easy to get stale or leak, and awkward to keep in sync across runs. Instead, log in **once by hand** into a persistent Chromium profile, and every later run reuses it:
+Log in **once by hand** into a persistent Chromium profile, and every later run reuses it:
 
 ```bash
 # opens a real, visible browser on startUrl and waits for you to close it — log in there
@@ -156,8 +156,6 @@ extension: {
 
 ## IDOR analysis (authz/IDOR detection)
 
-Ported from RAPIDOR's own full-mode pipeline (preindex → match → forge → evaluate), running server-side here instead of in-page:
-
 1. **Preindex** ([src/analysis/preindex.ts](src/analysis/preindex.ts)) — every captured React node's props are walked for "interesting" values (short strings/numbers under keys like `id`, `user`, `role`, `owner`, ...) and tokenized into `preindexed_values`.
 2. **Segment extraction** ([src/analysis/segments.ts](src/analysis/segments.ts)) — for each captured HTTP event, proposes the URL path segment and each query parameter as a candidate "swap this value" target.
 3. **Match finding** ([src/analysis/matchFinder.ts](src/analysis/matchFinder.ts)) — if a candidate's value matches a pre-indexed one, looks up sibling instances of the *same React component* with a different value at the same prop path.
@@ -165,12 +163,7 @@ Ported from RAPIDOR's own full-mode pipeline (preindex → match → forge → e
 5. **Response evaluation** ([src/analysis/responseEvaluate.ts](src/analysis/responseEvaluate.ts)) — the forged response is compared against the original (status/headers/body-shape similarity); if it still looks "authorized", the differing props are classified for authorization-relevance by a sentence-embedding model (`src/analysis/authzClassifier.ts`, `@huggingface/transformers`, cosine similarity against a few fixed "entitlement" concept sentences, cached in `authz_classifications` — see `db.clearClassifierCache` above).
 6. **Client-side routing fallback** ([src/analysis/clientRouting.ts](src/analysis/clientRouting.ts)) — for a query-parameter candidate whose forged request did not look like it leaked anything (e.g. the server correctly rejects it), also checks whether the page's own client-side routing honors that parameter anyway: it navigates back to the page the original event happened on, mutates `window.location` (`pushState` + a synthetic `popstate`) and watches for a real DOM mutation, independent of any server response — this is how a purely client-routed authorization bug (the UI trusts a query string it never re-validates) gets caught even though no "wrong" request ever reaches the network.
 
-A flagged finding (`vulnerabilities` table) records which detection path caught it (`detectionMethod: 'http' | 'client-routing'`), the reference/candidate URLs, and a human-readable `motivation` (which props differ and how). Everything above — including every stat that used to only exist transiently (segments extracted, matches found, candidates found, HTTP events, React states, requests generated, vulnerabilities flagged) — is persisted per site in `analysis_stats`; inspect it with:
-
-```bash
-npm run analysis-stats                              # reads storage/http-events.db
-npm run analysis-stats -- --db storage/other-run.db  # or any other SQLite file in that shape
-```
+A flagged finding (`vulnerabilities` table) records which detection path caught it (`detectionMethod: 'http' | 'client-routing'`), the reference/candidate URLs, and a human-readable `motivation` (which props differ and how). Everything above — including every stat that used to only exist transiently (segments extracted, matches found, candidates found, HTTP events, React states, requests generated, vulnerabilities flagged) — is persisted per site in `analysis_stats`; inspect it with `npm run stats` (see [Statistics](#statistics)).
 
 ### Test fixture: `react-app-target/`
 
@@ -183,31 +176,27 @@ A small Next.js app with two deliberately planted IDORs, used to prove detection
 cd react-app-target && node server.js   # builds (if needed) and serves everything on :3000, API included
 # in another terminal, from the repo root:
 START_URL=http://localhost:3000 npm start
-npm run analysis-stats   # both IDORs should show up, one per detectionMethod
+npm run stats   # both IDORs should show up, one per detectionMethod
 ```
 
 ## Output
 
-Each analysis gets its own folder `storage/sites/<site>_<timestamp>/` (e.g. `google.com_2026-10-30T12-16-20`):
+Everything the crawler produces lives in one SQLite file, `db.path` (default `storage/crawler.db`) — there are no JSON artifacts anywhere, and nothing else to look at:
 
-* `states.json`: JSON array with one record per state (ID, URL, depth, click path from the root, clickables, visible texts). It stays valid JSON while the crawl is running.
-* `state-graph.json`: the graph, edges `{ from, to, action }`. Updated at every new state.
-* `extension-end-<fn>.json`: result of the browser extension call declared with `when: 'end'` (mainly used today to surface RAPIDOR runtime errors — its analysis-related fields are not populated in `mode: 'minimal'`).
-* `state-<id>.png`: only when `screenshots` is enabled.
+* `crawl_states` — one row per distinct UI state (id, URL, depth, click path, clickables, visible texts), keyed by `(site, id)`. The screenshot, when `screenshots` is enabled, is a BLOB column on the same row rather than a separate file.
+* `crawl_edges` — the click graph: one row per edge (`from`, `to`, action type/target/text/selector).
+* `http_events`, `react_states`, `preindexed_values`, `vulnerabilities`, `analysis_stats`, `authz_classifications` — everything from [IDOR analysis](#idor-analysis-authzidor-detection).
 
-Crawlee's own bookkeeping (request queue, statistics) stays in `storage/{datasets,key_value_stores,request_queues}` and is cleared at the start of each run; `storage/sites/` is never cleared.
+Crawlee's own bookkeeping (request queue, key-value store) stays separate, under `storage/{datasets,key_value_stores,request_queues}`, and is cleared at the start of each run regardless of `db.clearOnStart`.
 
-Everything from [IDOR analysis](#idor-analysis-authzidor-detection) — `http_events`, `react_states`, `preindexed_values`, `vulnerabilities`, `analysis_stats`, `authz_classifications` — lives in the single SQLite file at `db.path` (default `storage/http-events.db`), not under `storage/sites/`.
-
-## Statistics daemon
+## Statistics
 
 ```bash
-npm run stats                    # refreshes every 5s, works while crawls are running
-npm run stats -- --once          # single pass
-npm run stats -- --interval 10 --dir storage/sites
+npm run stats                              # per-site crawl + IDOR stats, cross-site averages, flagged vulnerabilities
+npm run stats -- --db storage/other-run.db # or any other SQLite file in that shape
 ```
 
-Reads every folder in `storage/sites/` and writes `storage/sites/_stats.json` with a per-site row, plus totals and averages, for crawl-level metrics (states, edges) over all sites, including those still running. It predates the server-side analysis pipeline and still aggregates whatever an extension `end` call returned as JSON — which, in `mode: 'minimal'`, no longer carries vulnerability/React-state/HTTP counters. For IDOR findings and analysis stats, use `npm run analysis-stats` instead.
+A single pass over `storage/crawler.db` (WAL mode, so this reads fine even while a crawl is still running): states/edges per site, every [IDOR analysis](#idor-analysis-authzidor-detection) counter, the average of each across sites, and the full list of flagged vulnerabilities with their detection method and motivation.
 
 ## Tranco List
 
