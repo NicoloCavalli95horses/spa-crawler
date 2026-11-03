@@ -43,6 +43,7 @@ export interface CrawlConfig {
   blocklist: string[];          // texts not to click (e.g. logout)
   ignoreClickablesWithin: string[];  // CSS selectors: never treat anything inside these as clickable (e.g. nav/header/footer chrome)
   dismissOverlays: boolean;     // close blocking modals (Escape / close control) before capturing, so an interstitial does not cost a depth level
+  networkObserver: boolean;    // capture same-site fetch/XHR traffic via Playwright (shadow mode, alongside the extension's own HTTPTracker)
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
   auth?: AuthConfig;            // credentials sent with every request to the explored site (optional)
   debugNoCrawling: boolean;     // opens the browser on the URL and waits for the user to close it, without exploring (manual login)
@@ -95,6 +96,8 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   ignoreClickablesWithin: ['nav', 'header', 'footer'],
   // close blocking modals (Escape, then an explicit close control) before capturing a state
   dismissOverlays: true,
+  // crawler-side shadow capture of same-site fetch/XHR traffic, alongside the extension's own HTTPTracker
+  networkObserver: true,
   // Chrome extension: call results end up in the KeyValueStore as
   // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world
   // (content script with "world": "MAIN" in the manifest), otherwise window cannot see them.

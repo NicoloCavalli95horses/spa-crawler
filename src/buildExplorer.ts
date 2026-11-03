@@ -11,6 +11,10 @@ import { ExtensionCalls } from './browser/ExtensionCalls';
 import { StateNavigator } from './browser/StateNavigator';
 import { OverlayDismisser } from './browser/OverlayDismisser';
 import { RequestThrottle } from './browser/RequestThrottle';
+import type { NetworkObserver } from './browser/NetworkObserver';
+import { NetworkObserverHooks } from './browser/NetworkObserverHooks';
+import { CompositeHooks } from './core/CompositeHooks';
+import type { IExplorationHooks } from './core/interfaces';
 import { StateFingerprinter } from './state/StateFingerprinter';
 import { StateCapturer } from './state/StateCapturer';
 import { StateStore } from './state/StateStore';
@@ -22,7 +26,7 @@ import { FileOutput } from './state/output/FileOutput';
  * @param site    site label in the results; defaults to the host of rootUrl
  */
 export function buildExplorer(
-  rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname,
+  rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname, network?: NetworkObserver,
 ): DfsExplorer {
   // 1. leaves: no dependencies on other modules
   // one folder per site and per run: <site>_<timestamp>
@@ -49,9 +53,15 @@ export function buildExplorer(
   const navigator = new StateNavigator(rootUrl, executor, waiter, capturer, new RequestThrottle(cfg.restoreDelayMs));
 
   // 3. the algorithm receives everything ready-made
+  const maybeHooks: (IExplorationHooks | undefined)[] = [
+    cfg.extension && new ExtensionCalls(cfg.extension, output, cfg.actionTimeoutMs),
+    network && new NetworkObserverHooks(network, output),
+  ];
+  const hooks = maybeHooks.filter((h): h is IExplorationHooks => Boolean(h));
+
   return new DfsExplorer(
     waiter, executor, capturer, navigator, store, graph,
     { maxDepth: cfg.maxDepth, maxStates: cfg.maxStates, maxDurationSecs: cfg.maxDurationSecs },
-    cfg.extension && new ExtensionCalls(cfg.extension, output, cfg.actionTimeoutMs),
+    hooks.length > 0 ? new CompositeHooks(hooks) : undefined,
   );
 }

@@ -1,9 +1,11 @@
 import { pathToFileURL } from 'node:url';
+import type { Page } from 'playwright';
 import { PlaywrightCrawler, Configuration, type FinalStatistics, type RequestOptions } from 'crawlee';
 import { config as defaultConfig, type CrawlConfig, type ExtensionConfig } from './config';
 import { buildExplorer } from './buildExplorer';
 import { extensionLaunchArgs } from './browser/ExtensionCalls';
 import { applyAuth } from './browser/Auth';
+import { NetworkObserver } from './browser/NetworkObserver';
 
 /** Margin beyond the exploration budget: final capture and graph saving. */
 const HANDLER_MARGIN_SECS = 120;
@@ -46,6 +48,9 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   if (cfg.userDataDir && cfg.concurrency > 1) {
     throw new Error('userDataDir requires concurrency: 1 (a profile cannot be shared between browsers)');
   }
+  // one NetworkObserver per request, created in preNavigationHooks (before Crawlee's own first
+  // goto, so no request is missed) and read back in requestHandler to pass into buildExplorer
+  const networkObservers = new WeakMap<Page, NetworkObserver>();
   return new PlaywrightCrawler({
     // each site has its own page (more tabs with tabsPerSite) and its own explorer: sites can run in parallel
     maxConcurrency: cfg.concurrency,
@@ -70,6 +75,11 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       async ({ page, request }) => {
         await page.setViewportSize(cfg.viewport);
         if (cfg.auth) await applyAuth(page.context(), cfg.auth, request.url);
+        if (cfg.networkObserver) {
+          const observer = new NetworkObserver({ origin: new URL(request.url).origin });
+          observer.attach(page);
+          networkObservers.set(page, observer);
+        }
       },
     ],
     async requestHandler({ page, request, log }) {
@@ -85,16 +95,18 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       // optional prefix set by the caller (e.g. "[3/10] #42" from the Tranco script)
       const progress = typeof request.userData.progress === 'string' ? `${request.userData.progress} ` : '';
       log.info(`${progress}Exploring ${site} (${rootUrl})`);
+      const network = networkObservers.get(page);
       // extra tabs in the same context: cookies and storage shared with the first one
       const extraPages = await Promise.all(
         Array.from({ length: Math.max(0, cfg.tabsPerSite - 1) }, async () => {
           const p = await page.context().newPage();
           await p.setViewportSize(cfg.viewport);
+          network?.attach(p);   // before any navigation happens on it: nothing is missed
           return p;
         }),
       );
       try {
-        await buildExplorer(rootUrl, cfg, site).explore(page, extraPages);
+        await buildExplorer(rootUrl, cfg, site, network).explore(page, extraPages);
         log.info(`${progress}Finished ${site}`);
       } finally {
         await Promise.all(extraPages.map((p) => p.close().catch(() => {})));
