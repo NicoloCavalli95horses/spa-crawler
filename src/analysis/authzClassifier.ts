@@ -1,5 +1,6 @@
 import { pipeline } from '@huggingface/transformers';
 import type { PropDiff } from './responseEvaluate';
+import type { AuthzClassificationStore } from '../db/AuthzClassificationStore';
 
 /**
  * Port of RAPIDOR's extension-only offscreen classifier (react-devtools-extensions/src/offscreen/
@@ -30,7 +31,10 @@ function dot(a: ArrayLike<number>, b: ArrayLike<number>): number {
 export class AuthzClassifier {
   private extractor?: Promise<FeatureExtractor>;
   private conceptEmbeddings?: Float32Array[];
+  // L1 (in-memory, this process) in front of the store's L2 (SQLite, survives across runs/sites)
   private cache = new Map<string, { score: number; isAuthZRelevant: boolean }>();
+
+  constructor(private store: AuthzClassificationStore) {}
 
   private getExtractor(): Promise<FeatureExtractor> {
     this.extractor ??= pipeline('feature-extraction', MODEL) as unknown as Promise<FeatureExtractor>;
@@ -47,8 +51,11 @@ export class AuthzClassifier {
   }
 
   async classify(key: string): Promise<{ score: number; isAuthZRelevant: boolean }> {
-    const cached = this.cache.get(key);
-    if (cached) return cached;
+    const cached = this.cache.get(key) ?? this.store.get(key);
+    if (cached) {
+      this.cache.set(key, cached);
+      return cached;
+    }
 
     const extractor = await this.getExtractor();
     const concepts = await this.getConceptEmbeddings();
@@ -59,6 +66,7 @@ export class AuthzClassifier {
     const score = Math.max(...concepts.map((c) => dot(embedding, c)));
     const result = { score, isAuthZRelevant: score >= THRESHOLD };
     this.cache.set(key, result);
+    this.store.set(key, result);
     return result;
   }
 }

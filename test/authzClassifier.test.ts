@@ -1,33 +1,53 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { AuthzClassifier, assessAuthZ } from '../src/analysis/authzClassifier';
+import { AuthzClassificationStore } from '../src/db/AuthzClassificationStore';
 import { compareObj } from '../src/analysis/responseEvaluate';
+
+let root: string;
+before(async () => { root = await mkdtemp(join(tmpdir(), 'crawler-test-')); });
+after(async () => { await rm(root, { recursive: true, force: true }); });
+
+let n = 0;
+function newClassifier(): AuthzClassifier {
+  const store = new AuthzClassificationStore({ db: new Database(join(root, `${n++}.db`)), clearOnStart: false });
+  return new AuthzClassifier(store);
+}
 
 // Loads a real embedding model (cached under node_modules/@huggingface/transformers/.cache after
 // the first run); slower than the rest of the suite, same tradeoff RAPIDOR's own offscreen
 // classifier already accepted.
 describe('AuthzClassifier', { timeout: 120_000 }, () => {
   it('classifies an authorization-relevant key above the threshold', async () => {
-    const classifier = new AuthzClassifier();
-    const result = await classifier.classify('premium');
+    const result = await newClassifier().classify('premium');
     assert.equal(result.isAuthZRelevant, true);
   });
 
   it('does not classify a neutral key as authorization-relevant', async () => {
-    const classifier = new AuthzClassifier();
-    const result = await classifier.classify('title');
+    const result = await newClassifier().classify('title');
     assert.equal(result.isAuthZRelevant, false);
   });
 
   it('caches repeated classifications (same score object identity-equal content on reuse)', async () => {
-    const classifier = new AuthzClassifier();
+    const classifier = newClassifier();
     const first = await classifier.classify('role');
     const second = await classifier.classify('role');
     assert.deepEqual(first, second);
   });
 
+  it('persists classifications so a fresh classifier backed by the same store skips recomputing', async () => {
+    const db = new Database(join(root, 'shared.db'));
+    const first = await new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: false })).classify('owner');
+    const store = new AuthzClassificationStore({ db, clearOnStart: false });
+    assert.deepEqual(store.get('owner'), first);
+  });
+
   it('assessAuthZ flags a premium/free prop diff as authz-relevant; a cosmetic diff is not', async () => {
-    const classifier = new AuthzClassifier();
+    const classifier = newClassifier();
 
     const premiumDiff = compareObj({ id: 'a', premium: false }, { id: 'b', premium: true });
     const premiumAssessment = await assessAuthZ({ differences: premiumDiff, classifier });

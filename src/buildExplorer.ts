@@ -18,6 +18,7 @@ import type { PreindexedValueStore } from './db/PreindexedValueStore';
 import { ReactStateHooks } from './browser/ReactStateHooks';
 import type { HttpEventStore } from './db/HttpEventStore';
 import type { VulnerabilityStore } from './db/VulnerabilityStore';
+import type { AnalysisStatsStore } from './db/AnalysisStatsStore';
 import type { AuthzClassifier } from './analysis/authzClassifier';
 import { AnalysisPipeline } from './analysis/AnalysisPipeline';
 import { AnalysisHooks } from './browser/AnalysisHooks';
@@ -29,16 +30,20 @@ import { StateStore } from './state/StateStore';
 import { StateGraph } from './state/StateGraph';
 import { FileOutput } from './state/output/FileOutput';
 
-/** Cross-cutting collaborators that live for the whole crawler run (shared across sites), not just this one site's exploration. */
+/**
+ * Cross-cutting collaborators that live for the whole crawler run (shared across sites), not just
+ * this one site's exploration. Everything except `network` is always on: NetworkObserver/
+ * ReactStateHooks/the analysis pipeline have no per-run toggle anymore, so there is nothing left to
+ * make optional here besides `network` itself (still looked up per-page from a WeakMap in main.ts).
+ */
 export interface ObservabilityDeps {
   network?: NetworkObserver;
-  reactState?: ReactStateStore;
-  preindex?: PreindexedValueStore;
-  analysis?: {
-    httpEventStore: HttpEventStore;
-    vulnerabilityStore: VulnerabilityStore;
-    classifier: AuthzClassifier;
-  };
+  reactState: ReactStateStore;
+  preindex: PreindexedValueStore;
+  httpEventStore: HttpEventStore;
+  vulnerabilityStore: VulnerabilityStore;
+  statsStore: AnalysisStatsStore;
+  classifier: AuthzClassifier;
 }
 
 /**
@@ -46,9 +51,9 @@ export interface ObservabilityDeps {
  * @param site    site label in the results; defaults to the host of rootUrl
  */
 export function buildExplorer(
-  rootUrl: string, cfg: CrawlConfig, site = new URL(rootUrl).hostname, deps: ObservabilityDeps = {},
+  rootUrl: string, cfg: CrawlConfig, site: string, deps: ObservabilityDeps,
 ): DfsExplorer {
-  const { network, reactState, preindex, analysis } = deps;
+  const { network, reactState, preindex, httpEventStore, vulnerabilityStore, statsStore, classifier } = deps;
   // 1. leaves: no dependencies on other modules
   // one folder per site and per run: <site>_<timestamp>
   const output = new FileOutput(site);
@@ -74,18 +79,16 @@ export function buildExplorer(
   const navigator = new StateNavigator(rootUrl, executor, waiter, capturer, new RequestThrottle(cfg.restoreDelayMs));
 
   // 3. the algorithm receives everything ready-made
-  const analysisPipeline = cfg.analysis.enabled && analysis && preindex && reactState
-    ? new AnalysisPipeline(
-      analysis.httpEventStore, preindex, reactState, analysis.vulnerabilityStore, analysis.classifier,
-      { maxConcurrentRequests: cfg.analysis.maxConcurrentRequests, timeBetweenRequestsMs: cfg.analysis.timeBetweenRequestsMs },
-    )
-    : undefined;
+  const analysisPipeline = new AnalysisPipeline({
+    httpEventStore, preindexStore: preindex, reactStateStore: reactState, vulnerabilityStore, statsStore, classifier,
+    options: { maxConcurrentRequests: cfg.analysis.maxConcurrentRequests, timeBetweenRequestsMs: cfg.analysis.timeBetweenRequestsMs },
+  });
 
   const maybeHooks: (IExplorationHooks | undefined)[] = [
     cfg.extension && new ExtensionCalls(cfg.extension, output, cfg.actionTimeoutMs),
     network && new NetworkObserverHooks(network),
-    reactState && new ReactStateHooks(reactState, preindex),
-    analysisPipeline && new AnalysisHooks(analysisPipeline, site),
+    new ReactStateHooks(reactState, preindex),
+    new AnalysisHooks(analysisPipeline, site),
   ];
   const hooks = maybeHooks.filter((h): h is IExplorationHooks => Boolean(h));
 

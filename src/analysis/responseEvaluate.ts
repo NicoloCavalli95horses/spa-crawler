@@ -119,3 +119,11 @@ export function compareObj(a: unknown, b: unknown): PropDiff[] {
   compare(a, b);
   return diffs;
 }
+
+/** Human-readable "which props differ and how", for the vulnerabilities table's `motivation` column. */
+export function describeDiffs(differences: PropDiff[]): string {
+  if (differences.length === 0) return '(no prop differences)';
+  return differences
+    .map((d) => `${d.pathStr || '(root)'}: ${JSON.stringify(d.reference)} -> ${JSON.stringify(d.current)}`)
+    .join('; ');
+}

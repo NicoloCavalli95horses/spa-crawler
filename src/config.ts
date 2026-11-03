@@ -43,14 +43,12 @@ export interface CrawlConfig {
   blocklist: string[];          // texts not to click (e.g. logout)
   ignoreClickablesWithin: string[];  // CSS selectors: never treat anything inside these as clickable (e.g. nav/header/footer chrome)
   dismissOverlays: boolean;     // close blocking modals (Escape / close control) before capturing, so an interstitial does not cost a depth level
-  networkObserver: boolean;    // capture same-site fetch/XHR traffic via Playwright (shadow mode, alongside the extension's own HTTPTracker)
-  reactState: boolean;          // persist RAPIDOR's React state graphs (window.__RAPIDOR__getLatestState), tied to the current URL
   db: {
-    path: string;               // SQLite file, shared across the whole run (every site, every tab)
-    clearOnStart: boolean;      // wipe http_events/react_states/preindexed_values/vulnerabilities once at the start of each crawler run; true for debugging
+    path: string;                    // SQLite file, shared across the whole run (every site, every tab)
+    clearOnStart: boolean;           // wipe http_events/react_states/preindexed_values/vulnerabilities/analysis_stats once at the start of each crawler run; true for debugging
+    clearClassifierCache: boolean;   // wipe authz_classifications too; false by default: classifications are a pure function of the key string, independent of site/run, so they're worth keeping forever
   };
   analysis: {
-    enabled: boolean;              // run the IDOR analysis pipeline (preindex -> match -> forge -> evaluate) at the end of each site
     maxConcurrentRequests: number; // bounds forged-request concurrency; mirrors RAPIDOR's config.js maxConcurrentRequests
     timeBetweenRequestsMs: number; // pacing after each forged request; mirrors RAPIDOR's config.js timeBetweenRequests
   };
@@ -106,14 +104,10 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   ignoreClickablesWithin: ['nav', 'header', 'footer'],
   // close blocking modals (Escape, then an explicit close control) before capturing a state
   dismissOverlays: true,
-  // crawler-side shadow capture of same-site fetch/XHR traffic, alongside the extension's own HTTPTracker
-  networkObserver: true,
-  // persist RAPIDOR's React state graphs (minimal mode's whole output), tied to the current URL
-  reactState: true,
-  // deduplicated SQLite store the NetworkObserver/ReactStateHooks write into (shared by every tab/site in the run)
-  db: { path: 'storage/http-events.db', clearOnStart: true },
-  // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline
-  analysis: { enabled: true, maxConcurrentRequests: 3, timeBetweenRequestsMs: 800 },
+  // deduplicated SQLite store the NetworkObserver/ReactStateHooks/AnalysisPipeline write into (shared by every tab/site in the run)
+  db: { path: 'storage/http-events.db', clearOnStart: true, clearClassifierCache: false },
+  // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline; always on
+  analysis: { maxConcurrentRequests: 3, timeBetweenRequestsMs: 800 },
   // Chrome extension: call results end up in the KeyValueStore as
   // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world
   // (content script with "world": "MAIN" in the manifest), otherwise window cannot see them.
@@ -127,17 +121,24 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // DEBUG_NO_CRAWLING=true: no exploration, the browser stays open until you close it
   // (to log in manually into the persistent profile; use with HEADLESS=false)
   debugNoCrawling: process.env.DEBUG_NO_CRAWLING === 'true',
+  // RAPIDOR runs in 'minimal' mode (its own config.js): it only emits React state (Bridge+
+  // StateManager), so the only calls that still matter are the settle/wait handshake around each
+  // action (the crawler reads window.__RAPIDOR__getLatestState itself, via ReactStateHooks) and the
+  // start/end bookkeeping. __RAPIDOR__waitForAnalysis is gone from this list on purpose: in minimal
+  // mode it's a no-op that always resolves immediately (no AnalysisManager is ever constructed to
+  // feed it work) now that the whole analysis pipeline runs server-side.
   extension: {
     path: '../rapidor/packages/react-devtools-extensions/chrome/build/unpacked',
     calls: [
       // clears the extension's shared IndexedDB once, so a run on a persistent profile starts clean
       { fn: '__RAPIDOR__reset', when: 'start' },
-      // before acting on a page, wait until the extension has captured at least one state for it
-      // (otherwise a fast reload would navigate away before React state is recorded)
+      // before acting on a page, force-settle and wait until React state has been captured for it
+      // (otherwise a fast reload would navigate away before ReactStateHooks can read it)
       { fn: '__RAPIDOR__waitToAction', when: 'before-action', args: [{ timeoutMs: 3000 }] },
-      // after acting, let the extension finish analysing the result (query-param probing, swapped-id
-      // request/response evaluation) before we reload to the next element
-      { fn: '__RAPIDOR__waitForAnalysis', when: 'after-action', args: [{ timeoutMs: 8000 }] },
+      // after acting, settle again so the clicked-into state is ready the moment ReactStateHooks reads it
+      { fn: '__RAPIDOR__waitToAction', when: 'after-action', args: [{ timeoutMs: 8000 }] },
+      // kept only to surface extension runtime errors to the crawler log (ExtensionCalls.reportRuntimeErrors);
+      // its `stats` are not used for anything anymore — the crawler's own DB is the source of truth
       { fn: '__RAPIDOR__getData', when: 'end' },
     ],
   },

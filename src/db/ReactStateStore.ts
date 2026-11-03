@@ -68,4 +68,8 @@ export class ReactStateStore {
       : this.db.prepare('SELECT COUNT(*) AS n FROM react_states').get();
     return (row as { n: number }).n;
   }
+
+  countBySite(site: string): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM react_states WHERE site = ?').get(site) as { n: number }).n;
+  }
 }

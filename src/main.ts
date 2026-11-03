@@ -10,6 +10,8 @@ import { HttpEventStore } from './db/HttpEventStore';
 import { ReactStateStore } from './db/ReactStateStore';
 import { PreindexedValueStore } from './db/PreindexedValueStore';
 import { VulnerabilityStore } from './db/VulnerabilityStore';
+import { AnalysisStatsStore } from './db/AnalysisStatsStore';
+import { AuthzClassificationStore } from './db/AuthzClassificationStore';
 import { AuthzClassifier } from './analysis/authzClassifier';
 import { openDatabase } from './db/openDatabase';
 import type { ObservabilityDeps } from './buildExplorer';
@@ -59,30 +61,21 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   // goto, so no request is missed) and read back in requestHandler to pass into buildExplorer
   const networkObservers = new WeakMap<Page, NetworkObserver>();
   // shared by every site/tab in this run: created (and cleared, if configured) exactly once here,
-  // not per site, so concurrent sites never wipe each other's rows mid-run
-  const needsDb = cfg.networkObserver || cfg.reactState || cfg.analysis.enabled;
-  const db = needsDb ? openDatabase({ path: cfg.db.path }) : undefined;
-  const httpEventStore = cfg.networkObserver && db
-    ? new HttpEventStore({ db, clearOnStart: cfg.db.clearOnStart })
-    : undefined;
-  const reactStateStore = cfg.reactState && db
-    ? new ReactStateStore({ db, clearOnStart: cfg.db.clearOnStart })
-    : undefined;
-  const preindexStore = cfg.reactState && db
-    ? new PreindexedValueStore({ db, clearOnStart: cfg.db.clearOnStart })
-    : undefined;
-  // the analysis pipeline needs http events + react state + their preindex: only wired when all three exist
-  const vulnerabilityStore = cfg.analysis.enabled && db && httpEventStore && reactStateStore && preindexStore
-    ? new VulnerabilityStore({ db, clearOnStart: cfg.db.clearOnStart })
-    : undefined;
-  // shared across every site in this run: the embedding model loads once and its classification cache carries over
-  const classifier = vulnerabilityStore ? new AuthzClassifier() : undefined;
-  const deps: ObservabilityDeps = {
-    reactState: reactStateStore,
-    preindex: preindexStore,
-    analysis: httpEventStore && vulnerabilityStore && classifier
-      ? { httpEventStore, vulnerabilityStore, classifier }
-      : undefined,
+  // not per site, so concurrent sites never wipe each other's rows mid-run. Capture, React-state
+  // persistence and the analysis pipeline are always on — there is no feature gate for any of this.
+  const db = openDatabase({ path: cfg.db.path });
+  const httpEventStore = new HttpEventStore({ db, clearOnStart: cfg.db.clearOnStart });
+  const reactStateStore = new ReactStateStore({ db, clearOnStart: cfg.db.clearOnStart });
+  const preindexStore = new PreindexedValueStore({ db, clearOnStart: cfg.db.clearOnStart });
+  const vulnerabilityStore = new VulnerabilityStore({ db, clearOnStart: cfg.db.clearOnStart });
+  const statsStore = new AnalysisStatsStore({ db, clearOnStart: cfg.db.clearOnStart });
+  // classifications are a pure function of the key string, independent of site/run: kept across
+  // runs by default (its own clearClassifierCache flag, not the main clearOnStart)
+  const classificationStore = new AuthzClassificationStore({ db, clearOnStart: cfg.db.clearClassifierCache });
+  // shared across every site in this run: the embedding model loads once and its in-memory L1 cache carries over
+  const classifier = new AuthzClassifier(classificationStore);
+  const deps: Omit<ObservabilityDeps, 'network'> = {
+    reactState: reactStateStore, preindex: preindexStore, httpEventStore, vulnerabilityStore, statsStore, classifier,
   };
   return new PlaywrightCrawler({
     // each site has its own page (more tabs with tabsPerSite) and its own explorer: sites can run in parallel
@@ -108,11 +101,9 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       async ({ page, request }) => {
         await page.setViewportSize(cfg.viewport);
         if (cfg.auth) await applyAuth(page.context(), cfg.auth, request.url);
-        if (cfg.networkObserver) {
-          const observer = new NetworkObserver({ origin: new URL(request.url).origin, store: httpEventStore });
-          observer.attach(page);
-          networkObservers.set(page, observer);
-        }
+        const observer = new NetworkObserver({ origin: new URL(request.url).origin, store: httpEventStore });
+        observer.attach(page);
+        networkObservers.set(page, observer);
       },
     ],
     async requestHandler({ page, request, log }) {
