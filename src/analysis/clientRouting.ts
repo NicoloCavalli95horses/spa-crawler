@@ -60,8 +60,14 @@ export async function checkClientSideRouting({ page, paramName, paramValue }: {
     let hasMutatedDom = false;
     try {
       window.history.pushState({ ignore: true }, '', testUrl);
+      // waitDomIdle's Promise executor attaches the MutationObserver synchronously, before this call
+      // returns — started here, BEFORE dispatchEvent, so a listener that mutates the DOM synchronously
+      // (most non-React routers; React itself usually defers the commit to a microtask) is still
+      // caught. Calling it after dispatchEvent (as before) would miss exactly that common case: the
+      // mutation would already be done by the time anything starts observing for it.
+      const idle = waitDomIdle(500, 100);
       window.dispatchEvent(new Event('popstate'));
-      hasMutatedDom = await waitDomIdle(500, 100);
+      hasMutatedDom = await idle;
     } finally {
       window.history.pushState({ ignore: true }, '', originalUrl);
       window.dispatchEvent(new Event('popstate'));

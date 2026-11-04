@@ -28,11 +28,20 @@ export interface AnalysisPipelineDeps {
   options: AnalysisPipelineOptions;
 }
 
+/** Marks a vulnerability/finding as tested purely client-side: no HTTP verb ever applied. */
+const CLIENT_ROUTING_METHOD = 'CLIENT';
+
 /**
  * Server-side port of RAPIDOR's preindex -> matchFinder -> requestGenerator -> responseEvaluator
  * chain: for every captured HTTP event of a site, proposes an alternative segment value (from a
  * sibling component instance), forges the replacement request, and flags+persists a vulnerability
  * when the response looks like it succeeded AND the differing props are authorization-relevant.
+ *
+ * Query params a SPA only ever reads itself — never sent to the backend in any request, so they'd
+ * never be extracted at all if seeding came only from http_events — are seeded separately, from the
+ * crawler's own captured page URLs (reactStateStore), and tested purely via checkClientSideRouting
+ * (there is no server request to forge for these; see evaluateClientRoutingCandidate).
+ *
  * Every count along the way (segments extracted, matches found, candidates found, requests
  * generated) is recorded to AnalysisStatsStore, one row per site, for later averaging.
  */
@@ -45,10 +54,11 @@ export class AnalysisPipeline {
   constructor(private deps: AnalysisPipelineDeps) {}
 
   async runForSite({ page, site }: { page: Page; site: string }): Promise<void> {
-    const { httpEventStore, preindexStore, reactStateStore, vulnerabilityStore, statsStore, options } = this.deps;
+    const { httpEventStore, reactStateStore, vulnerabilityStore, statsStore, options } = this.deps;
     const extractor = new SegmentExtractor();
     const events = httpEventStore.listBySite(site);
-    const seen = new Set<string>(); // dedup candidate requests within this run (method+url)
+    const pageUrls = reactStateStore.listUrlsBySite(site);
+    const seen = new Set<string>(); // dedup candidate requests within this run
     const tasks: (() => Promise<void>)[] = [];
 
     let segmentsExtracted = 0;
@@ -56,22 +66,33 @@ export class AnalysisPipeline {
     let candidatesFound = 0;
 
     for (const event of events) {
-      for (const segment of extractor.extract(event.url)) {
-        segmentsExtracted++;
-        for (const match of preindexStore.findByValue(segment.value)) {
-          matchesFound++;
-          const graph = reactStateStore.getById(match.stateId);
-          if (!graph) continue;
+      const found = this.findUrlCandidates({ extractor, url: event.url });
+      segmentsExtracted += found.segments;
+      matchesFound += found.matches;
+      for (const { segment, candidate } of found.items) {
+        candidatesFound++;
+        const url = spliceSegment({ parts: segment.parts, index: segment.index, value: candidate.candidateValue, query: segment.query });
+        const key = `http|${event.method}|${url}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        tasks.push(() => this.evaluateHttpCandidate({ page, site, event, url, candidate, segment }));
+      }
+    }
 
-          for (const candidate of findCandidates({ stateId: match.stateId, graph, nodeId: match.nodeId, path: match.path })) {
-            candidatesFound++;
-            const url = spliceSegment({ parts: segment.parts, index: segment.index, value: candidate.candidateValue, query: segment.query });
-            const key = `${event.method}|${url}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            tasks.push(() => this.evaluateCandidate({ page, site, event, url, candidate, segment }));
-          }
-        }
+    for (const pageUrl of pageUrls) {
+      const found = this.findUrlCandidates({ extractor, url: pageUrl });
+      segmentsExtracted += found.segments;
+      matchesFound += found.matches;
+      for (const { segment, candidate } of found.items) {
+        // path segments of the page's own route: no probe exists yet for these (checkClientSideRouting
+        // only swaps a query param; replaying a client-routed path segment would need its own detector)
+        const paramName = segment.paramName;
+        if (!paramName) continue;
+        candidatesFound++;
+        const key = `client|${pageUrl}|${paramName}|${candidate.candidateValue}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        tasks.push(() => this.evaluateClientRoutingCandidate({ page, site, pageUrl, paramName, candidate }));
       }
     }
 
@@ -92,7 +113,32 @@ export class AnalysisPipeline {
     });
   }
 
-  private async evaluateCandidate({ page, site, event, url, candidate, segment }: {
+  /** Runs the preindex -> matchFinder steps for one URL (an http_event's or a crawled page's). */
+  private findUrlCandidates({ extractor, url }: { extractor: SegmentExtractor; url: string }): {
+    segments: number;
+    matches: number;
+    items: { segment: SegmentCandidate; candidate: ReturnType<typeof findCandidates>[number] }[];
+  } {
+    const { preindexStore, reactStateStore } = this.deps;
+    let segments = 0;
+    let matches = 0;
+    const items: { segment: SegmentCandidate; candidate: ReturnType<typeof findCandidates>[number] }[] = [];
+
+    for (const segment of extractor.extract(url)) {
+      segments++;
+      for (const match of preindexStore.findByValue(segment.value)) {
+        matches++;
+        const graph = reactStateStore.getById(match.stateId);
+        if (!graph) continue;
+        for (const candidate of findCandidates({ stateId: match.stateId, graph, nodeId: match.nodeId, path: match.path })) {
+          items.push({ segment, candidate });
+        }
+      }
+    }
+    return { segments, matches, items };
+  }
+
+  private async evaluateHttpCandidate({ page, site, event, url, candidate, segment }: {
     page: Page; site: string;
     event: ReturnType<HttpEventStore['listBySite']>[number];
     url: string;
@@ -140,6 +186,46 @@ export class AnalysisPipeline {
     });
     if (inserted) {
       log.warning(`AnalysisPipeline: potential access control issue (${detectionMethod}) — ${event.method} ${event.url} -> ${url}`);
+    }
+  }
+
+  /**
+   * For a query param the SPA only ever reads client-side (its value never reaches any captured
+   * HTTP request): there is no server response to forge/compare, so this goes straight to the
+   * live pushState+popstate probe, mirroring the client-routing tail of evaluateHttpCandidate.
+   */
+  private async evaluateClientRoutingCandidate({ page, site, pageUrl, paramName, candidate }: {
+    page: Page; site: string; pageUrl: string; paramName: string;
+    candidate: ReturnType<typeof findCandidates>[number];
+  }): Promise<void> {
+    const { vulnerabilityStore, classifier } = this.deps;
+
+    const clientRouting = await this.enqueueClientRoutingCheck({
+      page, pageUrl, paramName, paramValue: candidate.candidateValue,
+    });
+    if (!clientRouting.isUsingNewParams) return;
+
+    const differences = compareObj(candidate.referenceProps, candidate.candidateProps);
+    const authz = await assessAuthZ({ differences, classifier });
+    if (!authz.isAuthzRelevant) return;
+
+    const candidateUrl = new URL(pageUrl);
+    candidateUrl.searchParams.set(paramName, candidate.candidateValue);
+
+    const id = vulnerabilityId({
+      candidateValue: candidate.candidateValue, nodeId: candidate.candidateNodeId,
+      method: CLIENT_ROUTING_METHOD, url: candidateUrl.href,
+    });
+    const inserted = vulnerabilityStore.record({
+      id, site,
+      referenceUrl: pageUrl, candidateUrl: candidateUrl.href, method: CLIENT_ROUTING_METHOD,
+      referenceValue: String(candidate.referenceValue), candidateValue: candidate.candidateValue,
+      motivation: describeDiffs(differences),
+      detectionMethod: 'client-routing',
+      responseSimilarity: null, authzDiff: authz,
+    });
+    if (inserted) {
+      log.warning(`AnalysisPipeline: potential access control issue (client-routing) — ${pageUrl} -> ${candidateUrl.href}`);
     }
   }
 

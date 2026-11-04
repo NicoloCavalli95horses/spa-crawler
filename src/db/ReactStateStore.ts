@@ -72,4 +72,15 @@ export class ReactStateStore {
   countBySite(site: string): number {
     return (this.db.prepare('SELECT COUNT(*) AS n FROM react_states WHERE site = ?').get(site) as { n: number }).n;
   }
+
+  /**
+   * Every distinct URL a React state was captured at, for this site: the crawler's own page
+   * navigations/client-side route changes, as opposed to httpEventStore's server requests. Lets
+   * AnalysisPipeline seed candidates from query params the SPA only ever reads itself (never sent
+   * to the backend), which would otherwise never be extracted at all.
+   */
+  listUrlsBySite(site: string): string[] {
+    const rows = this.db.prepare('SELECT DISTINCT url FROM react_states WHERE site = ?').all(site) as { url: string }[];
+    return rows.map((r) => r.url);
+  }
 }
