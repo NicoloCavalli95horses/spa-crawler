@@ -104,6 +104,14 @@ describe('ActionExecutor', () => {
     await page.waitForURL(`${APP_ORIGIN}/due`);
   });
 
+  it('cancels a download triggered by a click, without blocking it', async () => {
+    const page = await browser.open({ '/': '<a href="/file.bin" download>File</a>', '/file.bin': 'payload' });
+    const downloadPromise = page.waitForEvent('download');
+    assert.equal(await executor().execute(page, click(await target(page, 'File'))), true);
+    const download = await downloadPromise;
+    assert.equal(await download.failure(), 'canceled');
+  });
+
   it('closes new tabs', async () => {
     const page = await browser.open({ '/': '<a href="/x" target="_blank">Tab</a>', '/x': 'x' });
     assert.equal(await executor().execute(page, click(await target(page, 'Tab'))), true);

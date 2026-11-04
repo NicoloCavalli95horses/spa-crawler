@@ -48,6 +48,14 @@ export class ActionExecutor implements IActionExecutor {
       // target=_blank links and window.open: only tabs opened by this page are closed
       page.on('popup', (p) => { p.close().catch(() => {}); });
 
+      // a "download" link/button is never blocked (the request behind it may still be worth
+      // mutating for IDOR, like any other), but the file itself is attacker-controlled content from
+      // a site under test: it is never written to disk, only logged so the run stays auditable.
+      page.on('download', (d) => {
+        log.warning(`Download triggered by exploration, cancelled: ${d.url()} (suggested filename: ${d.suggestedFilename()})`);
+        d.cancel().catch(() => {});
+      });
+
       await this.blockExternalNavigation(page);
     }
   }

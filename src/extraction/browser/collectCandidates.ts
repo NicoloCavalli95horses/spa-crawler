@@ -20,9 +20,7 @@ export interface CollectOptions {
 
 export function collectCandidates(opts: CollectOptions): RawElement[] {
   const SEMANTIC = [
-    'a[href]', 'button', 'select', 'summary',
-    'input[type=button]', 'input[type=submit]', 'input[type=reset]',
-    'input[type=checkbox]', 'input[type=radio]', 'input[type=image]',
+    'a[href]', 'button', 'summary',
     '[role=button]', '[role=link]', '[role=tab]', '[role=menuitem]',
     '[role=menuitemcheckbox]', '[role=menuitemradio]', '[role=option]',
     '[role=checkbox]', '[role=radio]', '[role=switch]', '[role=treeitem]',
@@ -50,8 +48,12 @@ export function collectCandidates(opts: CollectOptions): RawElement[] {
   }
 
   // 2. Filter: visible, enabled, not covered, and not inside an ignored container (eg. nav/header/footer)
+  // form fields are never clickables: we don't fill forms, and a click landing on one (e.g. inside
+  // a payment modal) risks opening a native picker/file dialog that then blocks the exploration
+  const FORM_FIELD_TAGS = new Set(['input', 'select', 'textarea']);
   const ignoreSelector = opts.ignoreWithin?.length ? opts.ignoreWithin.join(',') : null;
   const isUsable = (el: Element): DOMRect | null => {
+    if (FORM_FIELD_TAGS.has(el.tagName.toLowerCase())) return null;
     if (ignoreSelector && el.closest(ignoreSelector)) return null;
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return null;
@@ -147,10 +149,7 @@ export function collectCandidates(opts: CollectOptions): RawElement[] {
       cssPath: cssPathOf(el),
       rect: { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height },
       fixed,
-      // value counts as text only for button-like inputs (for a checkbox it would be "on")
-      text: clean((el as HTMLElement).innerText ||
-        (el.matches('input[type=button],input[type=submit],input[type=reset]')
-          ? (el as HTMLInputElement).value : undefined)),
+      text: clean((el as HTMLElement).innerText),
       role: el.getAttribute('role') ?? undefined,
       ariaLabel: clean(el.getAttribute('aria-label') ?? el.getAttribute('title')),
       href: el.getAttribute('href') ?? undefined,

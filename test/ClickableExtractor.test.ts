@@ -15,9 +15,26 @@ describe('ClickableExtractor', () => {
   it('finds semantic elements', async () => {
     const found = await texts(`
       <a href="/x">Link</a><button>Bottone</button><div role="button">Ruolo</div>
-      <input type="checkbox" aria-label="Spunta"><div tabindex="0">Focus</div>
+      <div aria-label="Spunta" role="checkbox">Spunta</div><div tabindex="0">Focus</div>
       <div onclick="void 0">Onclick</div><a>Senza href</a>`);
     assert.deepEqual(found, ['Link', 'Bottone', 'Ruolo', 'Spunta', 'Focus', 'Onclick']);
+  });
+
+  it('never treats a form field as a clickable, however it would otherwise be detected', async () => {
+    const found = await texts(`
+      <input type="checkbox" aria-label="Nativa">
+      <input type="button" value="Finto bottone">
+      <select><option>Scegli</option></select>
+      <textarea tabindex="0">Nota</textarea>
+      <input type="text" style="cursor:pointer" onclick="void 0">`);
+    assert.deepEqual(found, []);
+  });
+
+  it('a form field with a React click handler is still excluded', async () => {
+    const page = await browser.withHtml('<input id="i" type="text"><div>Testo</div>');
+    await page.evaluate(() => { (document.getElementById('i') as any)['__reactProps$abc'] = { onClick() {} }; });
+    const found = (await extractor().extract(page)).map((e) => e.text);
+    assert.deepEqual(found, []);
   });
 
   it('finds divs with React handlers in their internal props', async () => {
