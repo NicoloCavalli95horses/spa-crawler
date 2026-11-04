@@ -9,7 +9,8 @@
     "test": "node --import tsx --test test/*.test.ts",
     "tranco": "tsx scripts/tranco.ts",
     "stats": "tsx scripts/stats.ts",
-    "freemium-prefilter": "tsx scripts/freemiumPrefilter.ts"
+    "freemium-prefilter": "tsx scripts/freemiumPrefilter.ts",
+    "freemium-list": "tsx scripts/freemiumList.ts"
   },
   "keywords": [],
   "author": "",

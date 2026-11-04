@@ -75,6 +75,7 @@ While this happens, three more things run unconditionally for every site (see [I
 | [src/analysis/AnalysisPipeline.ts](src/analysis/AnalysisPipeline.ts) | The preindex → match → forge → evaluate chain; see [IDOR analysis](#idor-analysis-authzidor-detection). |
 | [scripts/tranco.ts](scripts/tranco.ts) | Runs the crawler on N domains from the [Tranco list](https://tranco-list.eu), starting from rank P (`--start`, default 1). |
 | [scripts/stats.ts](scripts/stats.ts) | Prints per-site crawl/IDOR stats, cross-site averages, and flagged findings from `storage/crawler.db`. |
+| [scripts/freemiumPrefilter.ts](scripts/freemiumPrefilter.ts), [scripts/freemiumList.ts](scripts/freemiumList.ts) | Triage of Tranco domains (React only, then paywall-like wording and billing scripts) and extraction of the result; see [Freemium prefilter](#freemium-prefilter). |
 
 ### Design Choices
 
@@ -186,6 +187,7 @@ Everything the crawler produces lives in one SQLite file, `db.path` (default `st
 * `crawl_states` — one row per distinct UI state (id, URL, depth, click path, clickables, visible texts), keyed by `(site, id)`. The screenshot, when `screenshots` is enabled, is a BLOB column on the same row rather than a separate file.
 * `crawl_edges` — the click graph: one row per edge (`from`, `to`, action type/target/text/selector).
 * `http_events`, `react_states`, `preindexed_values`, `vulnerabilities`, `analysis_stats`, `authz_classifications` — everything from [IDOR analysis](#idor-analysis-authzidor-detection).
+* `freemium_candidates` — the [Freemium prefilter](#freemium-prefilter) results. Unlike the tables above it is **never** wiped by `db.clearOnStart`: crawler runs do not touch it, and re-checking a domain only overwrites that domain's row.
 
 Crawlee's own bookkeeping (request queue, key-value store) stays separate, under `storage/{datasets,key_value_stores,request_queues}`, and is cleared at the start of each run.
 
@@ -195,6 +197,24 @@ Crawlee's own bookkeeping (request queue, key-value store) stays separate, under
 npm run stats                              # per-site crawl + IDOR stats, cross-site averages, flagged vulnerabilities
 npm run stats -- --db storage/other-run.db # or any other SQLite file in that shape
 ```
+
+## Freemium prefilter
+
+Narrows a Tranco range down to sites worth a manual login and a full crawl. The first filter is React (the engine only supports React apps): static markup markers, or a rendered page where react-dom registers with the devtools hook. Only React sites are then scored, by UI phrases whose embedding is close to paywall concepts plus known billing scripts (`js.stripe.com`, ...). Results go into `freemium_candidates` in `db.path`.
+
+```bash
+npm run freemium-prefilter -- --top 500
+npm run freemium-prefilter -- --top 500 --include memrise.com,busuu.com
+
+# list the stored candidates (React only, best score first)
+npm run freemium-list                              # all, as a table
+npm run freemium-list -- --top 20                  # only the first 20
+npm run freemium-list -- --top 20 --format domains # bare domains, one per line
+npm run freemium-list -- --format json > candidates.json
+npm run freemium-list -- --min-score 3 --include-non-react
+```
+
+`freemium-list` options: `--top N` (default all), `--min-score` (default `1`), `--format table|domains|json`, `--include-non-react`, `--db`.
 
 ## Tranco List
 
