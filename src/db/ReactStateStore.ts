@@ -43,13 +43,27 @@ export class ReactStateStore {
    * No-ops (returns undefined) when `graph` has no fingerprint: nothing usable to dedupe/store
    * (extension absent or not yet settled). Otherwise returns the row's id, via RETURNING, so a
    * caller (ReactStateHooks) can (re)index it without a separate lookup.
+   *
+   * On a repeat (same url, same RAPIDOR fingerprint — e.g. StateNavigator.restore() remounting the
+   * same route while backtracking the DFS), `graph`/`captured_at` are overwritten too, not just
+   * `seen_count` bumped: the fingerprint is RAPIDOR's own structural hash of the component tree, so
+   * two captures that share it can still carry different data (a page whose siblings/props finished
+   * loading later, a cache warming up, ...). PreindexedValueStore.reindex() is always called by the
+   * caller with this same fresh `graph`, replacing that state's indexed rows every time regardless
+   * of whether this was a fresh insert or a repeat — so if the stored graph here stayed frozen at
+   * the first capture, a later reindex would point AnalysisPipeline.findUrlCandidates' getById(id)
+   * read at a stale, mismatched node graph (even referencing nodeIds that don't exist in it, since
+   * every remount gets fresh RAPIDOR-assigned ids), silently losing whatever that later, possibly
+   * more complete, capture actually saw. Always keeping the latest graph guarantees the opposite:
+   * redundant captures are harmless, never a source of lost coverage.
    */
   record({ site, url, graph }: { site: string; url: string; graph: RapidorGraph | null | undefined }): number | undefined {
     if (!graph?.fingerprint) return undefined;
     const row = this.db.prepare(`
       INSERT INTO react_states (site, url, fingerprint, graph, captured_at)
       VALUES (@site, @url, @fingerprint, @graph, @capturedAt)
-      ON CONFLICT(url, fingerprint) DO UPDATE SET seen_count = seen_count + 1
+      ON CONFLICT(url, fingerprint) DO UPDATE SET
+        seen_count = seen_count + 1, graph = @graph, captured_at = @capturedAt
       RETURNING id
     `).get({
       site, url, fingerprint: graph.fingerprint, graph: JSON.stringify(graph), capturedAt: new Date().toISOString(),

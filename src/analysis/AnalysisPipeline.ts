@@ -67,6 +67,7 @@ export class AnalysisPipeline {
     const extractor = new SegmentExtractor();
     const events = httpEventStore.listBySite(site);
     const pageUrls = reactStateStore.listUrlsBySite(site);
+    const crawledStates = crawlStateStore.listBySite(site);
     // Every URL the crawler already reached on its own, through any channel it records — not just
     // the two lists above: also the DFS exploration's own visited states (crawl_states), which may
     // carry URLs neither http_events nor react_states ever saw (e.g. a state RAPIDOR failed to
@@ -76,8 +77,9 @@ export class AnalysisPipeline {
     const historyUrls = new Set<string>([
       ...events.map((e) => normalizeUrl(e.url)),
       ...pageUrls.map((u) => normalizeUrl(u)),
-      ...crawlStateStore.listBySite(site).map((s) => normalizeUrl(s.url)),
+      ...crawledStates.map((s) => normalizeUrl(s.url)),
     ]);
+    this.warnOnMissingReactStateCoverage({ site, crawledStates, pageUrls });
     const seen = new Set<string>(); // dedup candidate requests within this run
     const tasks: (() => Promise<void>)[] = [];
 
@@ -169,6 +171,32 @@ export class AnalysisPipeline {
       }
     }
     return { segments, matches, items };
+  }
+
+  /**
+   * Minimum coverage requirement: every URL the DFS actually visited (crawl_states — the ground
+   * truth of "the crawler was on this page") should have at least one captured React state
+   * (react_states) at that exact URL — query params included, since a different query string is
+   * legitimately a different state (and may well add more than one). A URL with none went through
+   * beforeAction/afterAction without ReactStateHooks ever getting usable data back (not settled in
+   * time, extension not injected on that tab, or an exception — see its own onEnd stats log for
+   * which), which means every candidate hiding on that page's own state was silently never indexed,
+   * so this pipeline run had no chance of ever proposing it. Logged as a warning, never thrown: this
+   * is a coverage gap to go investigate (start from ReactStateHooks' onEnd log for this run), not a
+   * reason to abort an otherwise-successful analysis pass.
+   */
+  private warnOnMissingReactStateCoverage({ site, crawledStates, pageUrls }: {
+    site: string;
+    crawledStates: { url: string }[];
+    pageUrls: string[];
+  }): void {
+    const covered = new Set(pageUrls);
+    const missing = new Set(crawledStates.map((s) => s.url).filter((url) => !covered.has(url)));
+    if (missing.size === 0) return;
+    log.warning(
+      `AnalysisPipeline: ${missing.size}/${new Set(crawledStates.map((s) => s.url)).size} crawled URL(s) for ${site} have ` +
+      `NO captured React state (coverage gap — these pages' own candidates were never indexed): ${[...missing].join(', ')}`,
+    );
   }
 
   private async evaluateHttpCandidate({ page, site, event, url, candidate, segment }: {
