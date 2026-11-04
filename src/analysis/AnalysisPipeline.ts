@@ -13,6 +13,7 @@ import { forgeRequest, runWithConcurrency, sleep } from './requestForge';
 import { getServerResponseSimilarity, compareObj, describeDiffs } from './responseEvaluate';
 import { assessAuthZ, type AuthzClassifier } from './authzClassifier';
 import { checkClientSideRouting, checkClientSideRoutingForPath, type ClientRoutingResult } from './clientRouting';
+import { formatDuration } from '../core/duration';
 
 export interface AnalysisPipelineOptions {
   maxConcurrentRequests: number;
@@ -32,6 +33,13 @@ export interface AnalysisPipelineDeps {
 
 /** Marks a vulnerability/finding as tested purely client-side: no HTTP verb ever applied. */
 const CLIENT_ROUTING_METHOD = 'CLIENT';
+
+// enqueueClientRoutingCheck: a negative client-routing probe is retried this many times in total
+// (1 + this many extra attempts) before being trusted as a genuine "no" — see that method's own
+// comment for why a single attempt is unreliable. CLIENT_ROUTING_RETRY_DELAY_MS gives the previous
+// probe's un-awaited rollback render a moment to actually finish before the retry starts its own.
+const MAX_CLIENT_ROUTING_ATTEMPTS = 3;
+const CLIENT_ROUTING_RETRY_DELAY_MS = 250;
 
 /**
  * Server-side port of RAPIDOR's preindex -> matchFinder -> requestGenerator -> responseEvaluator
@@ -62,7 +70,8 @@ export class AnalysisPipeline {
 
   constructor(private deps: AnalysisPipelineDeps) {}
 
-  async runForSite({ page, site }: { page: Page; site: string }): Promise<void> {
+  async runForSite({ page, site, explorationMs }: { page: Page; site: string; explorationMs: number }): Promise<void> {
+    const analysisStartedAt = Date.now();
     const { httpEventStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, options } = this.deps;
     const extractor = new SegmentExtractor();
     const events = httpEventStore.listBySite(site);
@@ -136,6 +145,9 @@ export class AnalysisPipeline {
       await runWithConcurrency({ tasks, limit: options.maxConcurrentRequests });
     }
 
+    const analysisMs = Date.now() - analysisStartedAt;
+    log.info(`AnalysisPipeline: ${site} — exploration ${formatDuration(explorationMs)}, analysis ${formatDuration(analysisMs)}`);
+
     statsStore.record({
       site,
       httpEvents: events.length,
@@ -145,6 +157,8 @@ export class AnalysisPipeline {
       candidatesFound,
       requestsGenerated: tasks.length,
       vulnerabilitiesFlagged: vulnerabilityStore.count(site),
+      explorationMs,
+      analysisMs,
     });
   }
 
@@ -331,15 +345,36 @@ export class AnalysisPipeline {
     }
   }
 
-  /** Serializes checkClientSideRouting*'s shared page mutation (mirrors RAPIDOR's own enqueueNavigation()). */
-  private enqueueClientRoutingCheck({ page, pageUrl, run }: {
+  /**
+   * Serializes checkClientSideRouting*'s shared page mutation (mirrors RAPIDOR's own
+   * enqueueNavigation()), and retries a negative result up to MAX_CLIENT_ROUTING_ATTEMPTS times.
+   *
+   * The probe itself (clientRouting.ts) fires its rollback pushState+popstate in a `finally` block
+   * without waiting for the resulting re-render to settle, so the Node-side promise can resolve
+   * before the browser has actually finished processing it. Queued back to back (as every
+   * candidate for the same page is here), the next probe can then start its own measurement window
+   * while that leftover render is still in flight — confirmed empirically (scripts/
+   * debugClientRoutingFlakiness.ts): running the same page's real candidate sequence repeatedly,
+   * *some* probe consistently misses in the first round or two (not always the same one — whichever
+   * lands in the polluted window), then settles to 100% reliable afterwards. A short, bounded retry
+   * costs nothing when the first attempt already succeeds and recovers almost every one of these
+   * transient misses otherwise — same "redundant capture beats a silent loss" tradeoff already made
+   * for react-state capture (see ReactStateStore.record()'s own comment).
+   */
+  private async enqueueClientRoutingCheck({ page, pageUrl, run }: {
     page: Page; pageUrl: string; run: () => Promise<ClientRoutingResult>;
   }): Promise<ClientRoutingResult> {
     const result = this.clientRoutingQueue.then(async () => {
       if (page.url() !== pageUrl) {
         await page.goto(pageUrl, { waitUntil: 'load', timeout: 10_000 }).catch(() => undefined);
       }
-      return run();
+      let attempt: ClientRoutingResult = { hasMutatedDom: false, isUsingNewParams: false };
+      for (let i = 0; i < MAX_CLIENT_ROUTING_ATTEMPTS; i++) {
+        attempt = await run();
+        if (attempt.isUsingNewParams) return attempt;
+        if (i < MAX_CLIENT_ROUTING_ATTEMPTS - 1) await sleep(CLIENT_ROUTING_RETRY_DELAY_MS);
+      }
+      return attempt; // every attempt came back negative: a genuine "no", not a retry left on the table
     });
     this.clientRoutingQueue = result.catch(() => undefined);
     return result;

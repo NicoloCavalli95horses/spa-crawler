@@ -4,6 +4,7 @@ import type {
   IStabilityWaiter, IActionExecutor, IStateCapturer, IStateNavigator, IStateStore, IStateGraph, IExplorationHooks,
 } from './interfaces';
 import type { UIState, Action, ElementDescriptor } from './types';
+import { formatDuration } from './duration';
 
 export interface ExplorationLimits {
   maxDepth: number;
@@ -43,20 +44,27 @@ export class DfsExplorer {
    * `extraPages` are extra tabs of the same context; hooks run only on `page`.
    */
   async explore(page: Page, extraPages: Page[] = []): Promise<void> {
-    this.deadline = Date.now() + this.limits.maxDurationSecs * 1000;
+    const startedAt = Date.now();
+    this.deadline = startedAt + this.limits.maxDurationSecs * 1000;
+    // Set right after the DFS work itself is done (success or a worker's own failure — allSettled
+    // never rejects), so it reflects "time spent clicking around", separate from onEnd's analysis
+    // time below, which only starts once this value is final. Stays 0 if onStart/the root capture
+    // itself throws before any work ever runs.
+    let explorationMs = 0;
     try {
       await this.hooks?.onStart(page);
       const workers: Worker[] = [page, ...extraPages].map((p) => ({ page: p, saved: 0, limitLogged: false }));
       const root = await this.capture(page, [], 0);
       await this.save(workers[0], root);
       const results = await Promise.allSettled(workers.map((w) => this.work(w)));
+      explorationMs = Date.now() - startedAt;
       const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
       if (failed) throw failed.reason;
     } finally {
-      await this.hooks?.onEnd(page);
+      await this.hooks?.onEnd(page, explorationMs);
       // even if the exploration is interrupted, the graph collected so far is saved
       await this.graph.persist();
-      log.info(`Exploration finished: ${this.store.count()} states, ${this.graph.edgeCount()} edges`);
+      log.info(`Exploration finished: ${this.store.count()} states, ${this.graph.edgeCount()} edges (${formatDuration(explorationMs)})`);
     }
   }
 

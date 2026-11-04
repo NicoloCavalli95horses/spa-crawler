@@ -9,8 +9,8 @@ export class CompositeHooks implements IExplorationHooks {
     for (const h of this.hooks) await h.onStart(page);
   }
 
-  async onEnd(page: Page): Promise<void> {
-    for (const h of this.hooks) await h.onEnd(page);
+  async onEnd(page: Page, explorationMs: number): Promise<void> {
+    for (const h of this.hooks) await h.onEnd(page, explorationMs);
   }
 
   async beforeAction(page: Page): Promise<void> {

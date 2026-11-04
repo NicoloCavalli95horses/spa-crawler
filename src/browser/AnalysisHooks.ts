@@ -12,9 +12,9 @@ export class AnalysisHooks implements IExplorationHooks {
 
   async onStart(): Promise<void> {}
 
-  async onEnd(page: Page): Promise<void> {
+  async onEnd(page: Page, explorationMs: number): Promise<void> {
     try {
-      await this.pipeline.runForSite({ page, site: this.site });
+      await this.pipeline.runForSite({ page, site: this.site, explorationMs });
     } catch (err) {
       log.warning(`AnalysisPipeline failed: ${(err as Error).message}`);
     }

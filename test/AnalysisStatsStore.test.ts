@@ -17,6 +17,7 @@ function newStore(name: string, clearOnStart = false): AnalysisStatsStore {
 const row = (extra: Partial<AnalysisStatsRow> = {}): AnalysisStatsRow => ({
   site: 'a.test', httpEvents: 10, segmentsExtracted: 5, reactStates: 3,
   matchesFound: 2, candidatesFound: 4, requestsGenerated: 4, vulnerabilitiesFlagged: 1,
+  explorationMs: 12_345, analysisMs: 678,
   ...extra,
 });
 

@@ -86,7 +86,7 @@ describe('AnalysisPipeline: client-side-only query params', () => {
     const stateId = reactStateStore.record({ site: 'app.test', url: pageUrl, graph })!;
     preindexStore.reindex({ stateId, graph });
 
-    await pipeline.runForSite({ page, site: 'app.test' });
+    await pipeline.runForSite({ page, site: 'app.test', explorationMs: 1000 });
 
     const findings = vulnerabilityStore.count('app.test');
     assert.equal(findings, 1);
@@ -107,7 +107,7 @@ describe('AnalysisPipeline: client-side-only query params', () => {
     const stateId = reactStateStore.record({ site: 'app.test', url: pageUrl, graph })!;
     preindexStore.reindex({ stateId, graph });
 
-    await pipeline.runForSite({ page, site: 'app.test' });
+    await pipeline.runForSite({ page, site: 'app.test', explorationMs: 1000 });
 
     assert.equal(vulnerabilityStore.count('app.test'), 0);
   });
@@ -166,7 +166,7 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
     const stateId = reactStateStore.record({ site: 'app.test', url: pageUrl, graph })!;
     preindexStore.reindex({ stateId, graph });
 
-    await pipeline.runForSite({ page, site: 'app.test' });
+    await pipeline.runForSite({ page, site: 'app.test', explorationMs: 1000 });
 
     const findings = vulnerabilityStore.count('app.test');
     assert.equal(findings, 1);
@@ -187,7 +187,7 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
     const stateId = reactStateStore.record({ site: 'app.test', url: pageUrl, graph })!;
     preindexStore.reindex({ stateId, graph });
 
-    await pipeline.runForSite({ page, site: 'app.test' });
+    await pipeline.runForSite({ page, site: 'app.test', explorationMs: 1000 });
 
     assert.equal(vulnerabilityStore.count('app.test'), 0);
   });
@@ -216,7 +216,7 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
       record: { id: 'state-already-seen', url: `${APP_ORIGIN}/users/102/profile`, depth: 1, path: [], clickables: [], texts: [] },
     });
 
-    await pipeline.runForSite({ page, site: 'app.test' });
+    await pipeline.runForSite({ page, site: 'app.test', explorationMs: 1000 });
 
     assert.equal(vulnerabilityStore.count('app.test'), 0);
   });
