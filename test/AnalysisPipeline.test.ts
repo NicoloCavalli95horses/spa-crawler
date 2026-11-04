@@ -36,7 +36,8 @@ function siblingGraph(): RapidorGraph {
 describe('AnalysisPipeline: client-side-only query params', () => {
   let n = 0;
   function newPipeline() {
-    const db = new Database(join(root, `${n++}.db`));
+    const dbPath = join(root, `${n++}.db`);
+    const db = new Database(dbPath);
     const httpEventStore = new HttpEventStore({ db, clearOnStart: true });
     const preindexStore = new PreindexedValueStore({ db, clearOnStart: true });
     const reactStateStore = new ReactStateStore({ db, clearOnStart: true });
@@ -46,7 +47,7 @@ describe('AnalysisPipeline: client-side-only query params', () => {
     const classifier = new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: true }));
     const pipeline = new AnalysisPipeline({
       httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, classifier,
-      options: { maxConcurrentRequests: 1, timeBetweenRequestsMs: 0 },
+      options: { maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports') },
     });
     return { pipeline, httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, classifier };
   }
@@ -116,7 +117,8 @@ describe('AnalysisPipeline: client-side-only query params', () => {
 describe('AnalysisPipeline: client-side-only path segments', () => {
   let n = 0;
   function newPipeline() {
-    const db = new Database(join(root, `path-${n++}.db`));
+    const dbPath = join(root, `path-${n++}.db`);
+    const db = new Database(dbPath);
     const httpEventStore = new HttpEventStore({ db, clearOnStart: true });
     const preindexStore = new PreindexedValueStore({ db, clearOnStart: true });
     const reactStateStore = new ReactStateStore({ db, clearOnStart: true });
@@ -126,7 +128,7 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
     const classifier = new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: true }));
     const pipeline = new AnalysisPipeline({
       httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, classifier,
-      options: { maxConcurrentRequests: 1, timeBetweenRequestsMs: 0 },
+      options: { maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports') },
     });
     return { pipeline, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, classifier };
   }

@@ -66,6 +66,7 @@ export interface CrawlConfig {
   analysis: {
     maxConcurrentRequests: number; // bounds forged-request concurrency; mirrors RAPIDOR's config.js maxConcurrentRequests
     timeBetweenRequestsMs: number; // pacing after each forged request; mirrors RAPIDOR's config.js timeBetweenRequests
+    reportsDir: string;            // where each flagged finding's reproduction script lands: <reportsDir>/<site>/<findingId>.repro.ts
   };
   lightweight: LightweightConfig;
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
@@ -106,7 +107,7 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // single SQLite file every store
   db: { path: 'storage/crawler.db', clearOnStart: true, clearClassifierCache: false },
   // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline
-  analysis: { maxConcurrentRequests: 3, timeBetweenRequestsMs: 500 },
+  analysis: { maxConcurrentRequests: 3, timeBetweenRequestsMs: 500, reportsDir: 'reports' },
   // USER_DATA_DIR enables a persistent profile (~ and $HOME are expanded); when unset, a temporary profile is used
   userDataDir: process.env.USER_DATA_DIR ? expandHome({ value: process.env.USER_DATA_DIR }) : undefined,
   // EXTRA_API_DOMAINS="api.example.com,d123.cloudfront.net" (comma-separated) for backends hosted off the app's own base domain

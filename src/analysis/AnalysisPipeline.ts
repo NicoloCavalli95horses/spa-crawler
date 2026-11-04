@@ -10,14 +10,18 @@ import type { AnalysisStatsStore } from '../db/AnalysisStatsStore';
 import { SegmentExtractor, spliceSegment, type SegmentCandidate } from './segments';
 import { findCandidates } from './matchFinder';
 import { forgeRequest, runWithConcurrency, sleep } from './requestForge';
-import { getServerResponseSimilarity, compareObj, describeDiffs } from './responseEvaluate';
+import { getServerResponseSimilarity, compareObj, describeDiffs, type PropDiff } from './responseEvaluate';
 import { assessAuthZ, type AuthzClassifier } from './authzClassifier';
 import { checkClientSideRouting, checkClientSideRoutingForPath, type ClientRoutingResult } from './clientRouting';
 import { formatDuration } from '../core/duration';
+import { writeReproductionScript, type ReproductionKind } from './reproductionScript';
 
 export interface AnalysisPipelineOptions {
   maxConcurrentRequests: number;
   timeBetweenRequestsMs: number;
+  dbPath: string;          // so a generated reproduction script can re-read the exact React snapshot a finding came from
+  userDataDir?: string;    // so it can reopen the same (authenticated, if persistent) browser profile
+  reportsDir: string;      // reproduction scripts land in <reportsDir>/<site>/<findingId>.repro.ts
 }
 
 export interface AnalysisPipelineDeps {
@@ -267,6 +271,13 @@ export class AnalysisPipeline {
     });
     if (inserted) {
       log.warning(`AnalysisPipeline: potential access control issue (${detectionMethod}) — ${event.method} ${event.url} -> ${url}`);
+      this.writeReproduction({
+        id, site, motivation: describeDiffs(differences), differences: authz.differences, sensitiveKeys: authz.sensitiveKeys,
+        candidate,
+        ...(detectionMethod === 'http'
+          ? { referenceUrl: event.url, candidateUrl: url, kind: { type: 'http' as const, method: event.method, headers: event.requestHeaders, postData: event.postData, baselineStatus: event.status ?? 0, baselineHeaders: event.responseHeaders ?? {}, baselineBody: event.responseBody ?? '', baselineContentType: event.contentType } }
+          : { referenceUrl: event.pageUrl, candidateUrl: url, kind: { type: 'client-routing-query' as const, paramName: segment.paramName!, candidateValue: candidate.candidateValue } }),
+      });
     }
   }
 
@@ -304,6 +315,11 @@ export class AnalysisPipeline {
     });
     if (inserted) {
       log.warning(`AnalysisPipeline: potential access control issue (client-routing) — ${pageUrl} -> ${candidateUrl}`);
+      this.writeReproduction({
+        id, site, referenceUrl: pageUrl, candidateUrl, motivation: describeDiffs(differences),
+        differences: authz.differences, sensitiveKeys: authz.sensitiveKeys, candidate,
+        kind: { type: 'client-routing-query', paramName, candidateValue: candidate.candidateValue },
+      });
     }
   }
 
@@ -342,7 +358,27 @@ export class AnalysisPipeline {
     });
     if (inserted) {
       log.warning(`AnalysisPipeline: potential access control issue (client-routing path) — ${pageUrl} -> ${candidateUrl}`);
+      this.writeReproduction({
+        id, site, referenceUrl: pageUrl, candidateUrl, motivation: describeDiffs(differences),
+        differences: authz.differences, sensitiveKeys: authz.sensitiveKeys, candidate,
+        kind: { type: 'client-routing-path', candidateUrl },
+      });
     }
+  }
+
+  /** Assembles the common fields every call site above already has in scope and delegates to writeReproductionScript. */
+  private writeReproduction({ id, site, referenceUrl, candidateUrl, motivation, differences, sensitiveKeys, candidate, kind }: {
+    id: string; site: string; referenceUrl: string; candidateUrl: string; motivation: string;
+    differences: PropDiff[]; sensitiveKeys: string[];
+    candidate: ReturnType<typeof findCandidates>[number];
+    kind: ReproductionKind;
+  }): void {
+    writeReproductionScript({
+      id, site, referenceUrl, candidateUrl, motivation, differences, sensitiveKeys,
+      stateId: candidate.stateId, referenceNodeId: candidate.referenceNodeId, candidateNodeId: candidate.candidateNodeId,
+      dbPath: this.deps.options.dbPath, userDataDir: this.deps.options.userDataDir, reportsDir: this.deps.options.reportsDir,
+      kind,
+    });
   }
 
   /**
