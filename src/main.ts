@@ -169,5 +169,6 @@ export async function runCrawler(
 
 // run directly (npm start): explores config.startUrl; imported: does nothing
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await runCrawler([defaultConfig.startUrl]);
+  const urls = defaultConfig.startUrls.length > 0 ? defaultConfig.startUrls : [defaultConfig.startUrl];
+  await runCrawler(urls.map((url, i) => ({ url, userData: { progress: `[${i + 1}/${urls.length}]` } })));
 }

@@ -1,4 +1,13 @@
 import 'dotenv/config'; // loads .env into process.env before any field below reads it
+import os from 'node:os';
+import path from 'node:path';
+
+// dotenv does not expand variables: resolve a leading ~, $HOME or ${HOME} ourselves
+function expandHome({ value }: { value: string }): string {
+  const home = os.homedir();
+  return path.resolve(value.replace(/^(~|\$HOME|\$\{HOME\})(?=\/|$)/, home));
+}
+
 export interface ExtensionCall {
   fn: string;  // name on window, e.g. '__RAPIDOR__getData'
   // - start: before the exploration;
@@ -25,6 +34,7 @@ export interface LightweightConfig {
 
 export interface CrawlConfig {
   startUrl: string;
+  startUrls: string[];          // sites to explore in one run (`npm start`); when empty, only startUrl is explored
   maxDepth: number;
   maxStates: number;            // cap on the states saved by each tab: guarantees termination
   maxDurationSecs: number;      // time budget per site: then the exploration shuts down on its own
@@ -66,11 +76,13 @@ export interface CrawlConfig {
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
   startUrl: process.env.START_URL || 'http://localhost:3000',
+  // START_URLS="https://a.com,https://b.com" (comma and/or newline separated, quoted in .env if on several lines), or fill the array here: replaces startUrl in `npm start`
+  startUrls: (process.env.START_URLS || '').split(/[\s,]+/).filter(Boolean),
   maxDepth: 2,
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
-  tabsPerSite: 3,
+  tabsPerSite: 10,
   restoreDelayMs: 150,
   viewport: { width: 1920, height: 1080 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
@@ -95,7 +107,8 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   db: { path: 'storage/crawler.db', clearOnStart: true, clearClassifierCache: false },
   // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline
   analysis: { maxConcurrentRequests: 3, timeBetweenRequestsMs: 500 },
-  userDataDir: process.env.USER_DATA_DIR || undefined,
+  // USER_DATA_DIR enables a persistent profile (~ and $HOME are expanded); when unset, a temporary profile is used
+  userDataDir: process.env.USER_DATA_DIR ? expandHome({ value: process.env.USER_DATA_DIR }) : undefined,
   // EXTRA_API_DOMAINS="api.example.com,d123.cloudfront.net" (comma-separated) for backends hosted off the app's own base domain
   extraApiDomains: (process.env.EXTRA_API_DOMAINS || 'd3vu3jnt00sinm.cloudfront.net').split(',').map((domain) => domain.trim()).filter(Boolean),
   // DEBUG_NO_CRAWLING=true: no exploration, the browser stays open until you close it (to log in manually into the persistent profile; use with HEADLESS=false)

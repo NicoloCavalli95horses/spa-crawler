@@ -95,6 +95,7 @@ Everything is in [src/config.ts](src/config.ts). The most important settings:
 | Key | Default | Description |
 | --- | --- | --- |
 | `startUrl` | `$START_URL` or `https://learn.pimsleur.com/MiniLearn` | Site to explore with `npm start`. Protocol is required. |
+| `startUrls` | `$START_URLS` (comma- or newline-separated) or `[]` | Several sites explored in one `npm start` run. When empty, only `startUrl` is explored. |
 | `maxDepth` / `maxStates` / `maxDurationSecs` | `2` / `500` / `1800` | Exploration limits. `maxStates` applies to each tab, `maxDurationSecs` to the whole site. |
 | `concurrency` | `1` | Sites explored in parallel. |
 | `tabsPerSite` | `5` | Tabs exploring the same site together (same browser context: cookies and storage are shared). Work is split automatically and a state is never saved twice. Keep in sync with RAPIDOR's own `maxStateSnapshots`. |
@@ -202,7 +203,7 @@ npm run stats -- --db storage/other-run.db # or any other SQLite file in that sh
 
 ## Freemium prefilter
 
-Narrows a Tranco range down to sites worth a manual login and a full crawl. The first filter is React (the engine only supports React apps): static markup markers, or a rendered page where react-dom registers with the devtools hook. Only React sites are then scored, by UI phrases whose embedding is close to paywall concepts plus known billing scripts (`js.stripe.com`, ...). Results go into `freemium_candidates` in `db.path`.
+Narrows a Tranco range down to sites worth a manual login and a full crawl. The first filter is React (the engine only supports React apps): static markup markers, or a rendered page where react-dom registers with the devtools hook. Only React sites are then scored, by UI phrases whose embedding is close to paywall concepts plus known billing scripts (`js.stripe.com`, ...). Results go into `freemium_candidates` in `db.path`. Domains already in that table are skipped, so widening the range only checks the new ones; pass `--recheck` to check them again.
 
 ```bash
 npm run freemium-prefilter -- --top 500

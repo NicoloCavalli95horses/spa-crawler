@@ -69,6 +69,12 @@ export class FreemiumCandidateStore {
     });
   }
 
+  /** Domains that already have a row, whatever the outcome (failed fetches included). */
+  checkedDomains(): Set<string> {
+    const rows = this.db.prepare('SELECT domain FROM freemium_candidates').all() as { domain: string }[];
+    return new Set(rows.map((r) => r.domain));
+  }
+
   /** Every checked domain, React sites first, then highest score. */
   all(): (FreemiumCandidateRow & { checkedAt: string })[] {
     const rows = this.db.prepare('SELECT * FROM freemium_candidates ORDER BY is_react DESC, score DESC, domain ASC').all() as any[];

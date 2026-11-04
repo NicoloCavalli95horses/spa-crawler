@@ -8,11 +8,14 @@
  *      paywall concepts (same model as the authz classifier, see freemiumClassifier.ts), plus
  *      billing-provider scripts (js.stripe.com, ...). A client-rendered SPA shell often has neither in
  *      its raw markup, so a rendered pass also kicks in when the static score is zero.
+ * Domains that already have a row in freemium_candidates are skipped (unless --recheck), so a wider
+ * range only costs the new ones.
  * Narrows which domains are worth a manual login and a full exploration — it is not an IDOR finding.
  *
  *   npm run freemium-prefilter -- --top 500
  *   npm run freemium-prefilter -- --top 500 --include memrise.com,busuu.com,babbel.com
  *   npm run freemium-prefilter -- --top 0 --include memrise.com --render all   # curated list only
+ *   npm run freemium-prefilter -- --top 500 --recheck       # also re-check domains already in the db
  *   npm run freemium-prefilter -- --top 500 --render none   # static only: React is only detected via markup markers
  */
 import { parseArgs } from 'node:util';
@@ -40,6 +43,7 @@ const { values: args } = parseArgs({
     'timeout-ms': { type: 'string', default: '8000' },
     'min-score': { type: 'string', default: '1' },       // only affects what gets printed, not what gets stored
     'show-non-react': { type: 'boolean', default: false },  // also print domains that failed the React gate
+    recheck: { type: 'boolean', default: false },   // check domains even if they are already in the db
     db: { type: 'string', default: config.db.path },
   },
 });
@@ -119,10 +123,14 @@ const includeDomains = (args.include ?? '').split(',').map((d) => d.trim()).filt
 const rankByDomain = new Map(trancoEntries.map((e) => [e.domain, e.rank]));
 const domains = [...new Set([...trancoEntries.map((e) => e.domain), ...includeDomains])];
 
-log.info(`Checking ${domains.length} domain(s) (${trancoEntries.length} from Tranco, ${includeDomains.length} always-include), render=${renderMode}`);
-
 const db = openDatabase({ path: args.db! });
 const store = new FreemiumCandidateStore({ db, clearOnStart: false });
+
+// `domains` stays the full requested set (it is what the final table reports); `pending` is what is actually fetched
+const alreadyChecked = args.recheck ? new Set<string>() : store.checkedDomains();
+const pending = domains.filter((d) => !alreadyChecked.has(d));
+
+log.info(`Checking ${pending.length} domain(s) (${trancoEntries.length} from Tranco, ${includeDomains.length} always-include, ${domains.length - pending.length} already in the db skipped), render=${renderMode}`);
 const classifier = new FreemiumPhraseClassifier();
 
 const browser = renderMode === 'none' ? null : await chromium.launch({ headless: true });
@@ -141,7 +149,7 @@ async function renderThrottled(domain: string): Promise<RenderedPage | null> {
 }
 
 async function checkDomain(domain: string, index: number): Promise<void> {
-  const progress = `[${index + 1}/${domains.length}]`;
+  const progress = `[${index + 1}/${pending.length}]`;
   const rank = rankByDomain.get(domain) ?? null;
   log.info(`${progress} Checking ${domain}...`);
 
@@ -151,7 +159,7 @@ async function checkDomain(domain: string, index: number): Promise<void> {
   } catch (err) {
     completed++;
     const message = err instanceof Error ? err.message : String(err);
-    log.info(`${progress} ${domain}: failed (${message}) [${completed}/${domains.length} done]`);
+    log.info(`${progress} ${domain}: failed (${message}) [${completed}/${pending.length} done]`);
     store.record({
       domain, rank, isReact: false, reactEvidence: [], score: 0,
       keywordHits: [], billingScriptHits: [], renderedWithJs: false,
@@ -172,7 +180,7 @@ async function checkDomain(domain: string, index: number): Promise<void> {
   if (reactEvidence.length === 0) {
     completed++;
     store.record({ domain, rank, isReact: false, reactEvidence: [], score: 0, keywordHits: [], billingScriptHits: [], renderedWithJs, error: null });
-    log.info(`${progress} ${domain}: not React, skipped [${completed}/${domains.length} done]`);
+    log.info(`${progress} ${domain}: not React, skipped [${completed}/${pending.length} done]`);
     return;
   }
 
@@ -193,14 +201,14 @@ async function checkDomain(domain: string, index: number): Promise<void> {
 
   store.record({ domain, rank, isReact: true, reactEvidence, ...result, renderedWithJs, error: null });
   completed++;
-  log.info(`${progress} ${domain}: React (${reactEvidence.join(', ')}), score ${result.score}${renderedWithJs ? ' (rendered)' : ''} [${completed}/${domains.length} done]`);
+  log.info(`${progress} ${domain}: React (${reactEvidence.join(', ')}), score ${result.score}${renderedWithJs ? ' (rendered)' : ''} [${completed}/${pending.length} done]`);
 }
 
 // the static fetches run at full concurrency; the Playwright fallback is throttled separately by
 // capping how many `checkDomain` calls are inside their render step at once (crude but sufficient
 // for a triage script: a browser page is much heavier than a bare fetch)
 await runWithConcurrency({
-  tasks: domains.map((domain, index) => async () => {
+  tasks: pending.map((domain, index) => async () => {
     while (rendering >= renderConcurrency) await new Promise((r) => setTimeout(r, 100));
     await checkDomain(domain, index);
   }),
@@ -213,7 +221,7 @@ const results = store.all().filter((r) => domains.includes(r.domain));
 const reactCount = results.filter((r) => r.isReact).length;
 const shown = results.filter((r) =>
   includeDomains.includes(r.domain) || (r.isReact ? r.score >= minScore : args['show-non-react']));
-console.log(`\n${results.length} checked, ${reactCount} use React, ${shown.length} shown (React with score >= ${minScore}, or always-include):\n`);
+console.log(`\n${results.length} domains (${pending.length} newly checked), ${reactCount} use React, ${shown.length} shown (React with score >= ${minScore}, or always-include):\n`);
 console.table(shown.map((r) => ({
   domain: r.domain, rank: r.rank ?? '-', react: r.isReact ? r.reactEvidence.join(', ') : 'no', score: r.score,
   keywords: r.keywordHits.join(' | ') || '-',

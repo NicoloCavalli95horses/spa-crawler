@@ -3,17 +3,32 @@ import assert from 'node:assert/strict';
 import { SegmentExtractor, spliceSegment } from '../src/analysis/segments';
 
 describe('SegmentExtractor', () => {
-  it('extracts the last path segment as a candidate by default (no history yet)', () => {
+  it('extracts a trailing window of path segments as candidates by default (no history yet)', () => {
+    // 3 segments -> trailing window of 2 ("users", "42"), no history yet to add a 3rd signal
     const candidates = new SegmentExtractor().extract('https://a.test/api/users/42');
-    assert.deepEqual(candidates, [{ parts: ['https://a.test/api/users/', ''], value: '42', index: 1, query: '' }]);
+    assert.deepEqual(candidates, [
+      { parts: ['https://a.test/api/', '/42'], value: 'users', index: 1, query: '' },
+      { parts: ['https://a.test/api/users/', ''], value: '42', index: 1, query: '' },
+    ]);
   });
 
-  it('learns which segment varies across requests with the same shape', () => {
+  it('learns which segment varies across requests with the same shape, union\'d with the trailing window', () => {
     const extractor = new SegmentExtractor();
     extractor.extract('https://a.test/api/users/42/profile');
     const candidates = extractor.extract('https://a.test/api/users/43/profile');
-    assert.equal(candidates[0].value, '43');
-    assert.deepEqual(candidates[0].parts, ['https://a.test/api/users/', '/profile']);
+    const byValue = Object.fromEntries(candidates.map((c) => [c.value, c]));
+    assert.equal(byValue['43'].parts.join(''), 'https://a.test/api/users//profile');
+  });
+
+  it('proposes more trailing candidates for longer paths, fewer for short ones', () => {
+    const short = new SegmentExtractor().extract('https://a.test/dashboard');
+    assert.equal(short.length, 1); // 1 segment -> window of 1
+
+    const medium = new SegmentExtractor().extract('https://a.test/course/start/objective_abc');
+    assert.equal(medium.length, 2); // 3 segments -> window of 2
+
+    const long = new SegmentExtractor().extract('https://a.test/dashboard/learning/course/start/objective_abc/activity_def/exercise_1');
+    assert.equal(long.length, 3); // 7 segments -> window of 3 (capped)
   });
 
   it('extracts query params as separate candidates, excluding true/false and the path value', () => {
