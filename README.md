@@ -53,7 +53,7 @@ termination is guaranteed even on very rich UIs. An error on an element only cos
 While this happens, three more things run unconditionally for every site (see [IDOR analysis](#idor-analysis-authzidor-detection)):
 
 * **`NetworkObserver`** captures same-site `fetch`/XHR traffic directly via Playwright (`page.on('requestfinished'/'requestfailed')`), deduplicated into `http_events`.
-* **`ReactStateHooks`** reads `window.__RAPIDOR__getLatestState()` (exposed by the RAPIDOR extension, see below) after each action and persists it into `react_states`, immediately re-indexing the interesting prop values it contains (`preindexed_values`).
+* **`ReactStateHooks`** reads `window.__RAPIDOR__getLatestState()` (exposed by the RAPIDOR extension, see below) after each action and persists it into `react_states`, immediately re-indexing the interesting prop values it contains (`preindexed_values`). A repeated capture of the same `(url, fingerprint)` refreshes the stored graph (so the preindex never points at node IDs missing from it), and capture outcomes (captured / no graph / failed) are counted and logged. `AnalysisPipeline` warns when a crawled URL has no React state at all.
 * **`AnalysisPipeline`** runs once per site, at the end of its exploration: for every captured HTTP event it looks for a sibling React component instance with a different value at the same prop path, forges the corresponding request, and flags+persists a vulnerability (`vulnerabilities`) when the response looks authorized and the differing props are themselves authorization-relevant.
 
 ### Main Components
@@ -76,6 +76,8 @@ While this happens, three more things run unconditionally for every site (see [I
 | [src/analysis/AnalysisPipeline.ts](src/analysis/AnalysisPipeline.ts) | The preindex → match → forge → evaluate chain; see [IDOR analysis](#idor-analysis-authzidor-detection). |
 | [scripts/tranco.ts](scripts/tranco.ts) | Runs the crawler on N domains from the [Tranco list](https://tranco-list.eu), starting from rank P (`--start`, default 1). |
 | [scripts/stats.ts](scripts/stats.ts) | Prints per-site crawl/IDOR stats, cross-site averages, and flagged findings from `storage/crawler.db`. |
+| [src/analysis/reproductionScript.ts](src/analysis/reproductionScript.ts) | Generates a runnable `.repro.ts` for every flagged finding; see [Reproduction scripts](#reproduction-scripts). |
+| `scripts/debug*.ts` | Manual validation scripts (not part of the pipeline): `debugPimsleurIdor` (headless vs headful, one phase per process), `debugClientRoutingFlakiness` (probe reliability), `debugBusuuIdor` (React-state capture, uses a dedicated `storage/debug-busuu.db`), `debugPermissions` (Chromium auto-denies camera/mic/geolocation/notifications). |
 | [scripts/freemiumPrefilter.ts](scripts/freemiumPrefilter.ts), [scripts/freemiumList.ts](scripts/freemiumList.ts) | Triage of Tranco domains (React only, then paywall-like wording and billing scripts) and extraction of the result; see [Freemium prefilter](#freemium-prefilter). |
 
 ### Design Choices
@@ -113,7 +115,8 @@ Everything is in [src/config.ts](src/config.ts). The most important settings:
 | `db.path` | `storage/crawler.db` | Shared SQLite file for the whole run — every table the crawler writes. |
 | `db.clearOnStart` | `true` | Wipes `crawl_states`/`crawl_edges`/`http_events`/`react_states`/`preindexed_values`/`vulnerabilities`/`analysis_stats` once at the start of the run. |
 | `db.clearClassifierCache` | `false` | Wipes `authz_classifications` too. Off by default: a classification is a pure function of the key string, independent of site or run, so it is worth keeping forever. |
-| `analysis.maxConcurrentRequests` / `analysis.timeBetweenRequestsMs` | `3` / `800` | Bound and pace forged requests, mirroring RAPIDOR's own `config.js` defaults. |
+| `analysis.maxConcurrentRequests` / `analysis.timeBetweenRequestsMs` | `3` / `500` | Bound and pace forged requests. |
+| `analysis.reportsDir` | `reports` | Where the reproduction script of each flagged finding is written (`<reportsDir>/<site>/<findingId>.repro.ts`, gitignored). |
 
 ## Authentication (protected areas)
 
@@ -161,13 +164,34 @@ extension: {
 ## IDOR analysis (authz/IDOR detection)
 
 1. **Preindex** ([src/analysis/preindex.ts](src/analysis/preindex.ts)) — every captured React node's props are walked for "interesting" values (short strings/numbers under keys like `id`, `user`, `role`, `owner`, ...) and tokenized into `preindexed_values`.
-2. **Segment extraction** ([src/analysis/segments.ts](src/analysis/segments.ts)) — for each captured HTTP event, proposes the URL path segment and each query parameter as a candidate "swap this value" target.
+2. **Segment extraction** ([src/analysis/segments.ts](src/analysis/segments.ts)) — for each captured HTTP event, proposes several path segments and each query parameter as candidate "swap this value" targets. Path segments are the union of (a) every index that was ever the sole one differing from a previously seen path of the same shape, and (b) a trailing window of the last `ceil(segmentCount / 2)` segments (capped at 5), taken without any "looks like an id" test since ids are as often plain numbers as UUIDs. At most 5 path candidates are kept per URL.
 3. **Match finding** ([src/analysis/matchFinder.ts](src/analysis/matchFinder.ts)) — if a candidate's value matches a pre-indexed one, looks up sibling instances of the *same React component* with a different value at the same prop path.
 4. **Request forging** ([src/analysis/requestForge.ts](src/analysis/requestForge.ts)) — splices the sibling's value in and replays the request via Playwright's `page.request.fetch()` (reuses the browsing context's cookies, but — unlike the page's own `fetch`/XHR — never fires `page.on('request')`, so forged probes never pollute `http_events`).
 5. **Response evaluation** ([src/analysis/responseEvaluate.ts](src/analysis/responseEvaluate.ts)) — the forged response is compared against the original (status/headers/body-shape similarity); if it still looks "authorized", the differing props are classified for authorization-relevance by a sentence-embedding model (`src/analysis/authzClassifier.ts`, `@huggingface/transformers`, cosine similarity against a few fixed "entitlement" concept sentences, cached in `authz_classifications` — see `db.clearClassifierCache` above).
-6. **Client-side routing fallback** ([src/analysis/clientRouting.ts](src/analysis/clientRouting.ts)) — for a query-parameter candidate whose forged request did not look like it leaked anything (e.g. the server correctly rejects it), also checks whether the page's own client-side routing honors that parameter anyway: it navigates back to the page the original event happened on, mutates `window.location` (`pushState` + a synthetic `popstate`) and watches for a real DOM mutation, independent of any server response — this is how a purely client-routed authorization bug (the UI trusts a query string it never re-validates) gets caught even though no "wrong" request ever reaches the network.
+6. **Client-side routing fallback** ([src/analysis/clientRouting.ts](src/analysis/clientRouting.ts)) — for a candidate whose forged request did not look like it leaked anything (e.g. the server correctly rejects it), also checks whether the page's own client-side routing honors the swapped value anyway: it navigates back to the page the original event happened on, mutates `window.location` (`pushState` + a synthetic `popstate`) and watches for a real DOM mutation, independent of any server response — this is how a purely client-routed authorization bug (the UI trusts a URL it never re-validates) gets caught even though no "wrong" request ever reaches the network. It works for both **query parameters** (`checkClientSideRouting`, which also hooks `URLSearchParams` to confirm the page actually read the new value) and **path segments** (`checkClientSideRoutingForPath`, DOM mutation only, since no single API tells whether a router read a path segment). Because the probe's rollback can leave a render in flight that pollutes the next probe on the shared page, a negative result is retried up to 3 times before being trusted.
+   Candidates are also **seeded from the crawler's own visited page URLs**, not only from `http_events`: a value an SPA only ever reads client-side never shows up in any request, yet is still tested via the client-routing probe.
+7. **History filter** — before any request or probe, a candidate URL that the crawler already reached on its own (checked against the union of `http_events`, `react_states` and `crawl_states`) is skipped: swapping in a value the user can already reach by clicking around is not evidence of unauthorized access.
 
-A flagged finding (`vulnerabilities` table) records which detection path caught it (`detectionMethod: 'http' | 'client-routing'`), the reference/candidate URLs, and a human-readable `motivation` (which props differ and how). Everything above — including every stat that used to only exist transiently (segments extracted, matches found, candidates found, HTTP events, React states, requests generated, vulnerabilities flagged) — is persisted per site in `analysis_stats`; inspect it with `npm run stats` (see [Statistics](#statistics)).
+A flagged finding (`vulnerabilities` table) records which detection path caught it (`detectionMethod: 'http' | 'client-routing'`), the reference/candidate URLs, and a human-readable `motivation` (which props differ and how). Everything above — including every stat that used to only exist transiently (segments extracted, matches found, candidates found, HTTP events, React states, requests generated, vulnerabilities flagged) and the wall-clock time of the exploration and analysis phases (`exploration_ms`/`analysis_ms`, logged as `hh:mm:ss.mmm`) — is persisted per site in `analysis_stats`; inspect it with `npm run stats` (see [Statistics](#statistics)).
+
+### Reproduction scripts
+
+Right after a genuinely new finding is recorded (by any of the three paths: forged HTTP request, client-routing on a query param, client-routing on a path segment), [src/analysis/reproductionScript.ts](src/analysis/reproductionScript.ts) writes a standalone `reports/<site>/<site>_<vulnType>_<timestamp>.repro.ts` (`vulnType` is `http`, `client-query`, or `client-path`; `timestamp` includes milliseconds, so concurrently-evaluated candidates never collide). It is self-contained — the original request/response and both nodes' React props are embedded in the file itself, so it never depends on `storage/crawler.db` (which a later crawl, `db.clearOnStart` being the default, wipes):
+
+```bash
+npx tsx reports/<site>/<site>_<vulnType>_<timestamp>.repro.ts
+```
+
+All three finding kinds go through the **same flow**: a real (non-headless) browser opens, navigates to the original URL/request and the mutated one, and a screenshot is taken of each — for an HTTP finding this means opening the reference and candidate URLs directly (skipped, with a message, for a non-`GET` method, which can't be replayed by opening a URL); for a client-routing finding, the mutation is `pushState`+`popstate`, no reload. The script then prints, in order:
+
+1. the **original** request/response (http) or page (client-routing);
+2. the **mutated** request/response (a live, fresh request) or page;
+3. the two **screenshots** (`<baseName>.original.png`, `<baseName>.mutated.png`), each written next to the script as soon as it's taken;
+4. the **image diff**, in its own section (`<baseName>.diff.png`, via `pixelmatch`/`pngjs`) with the changed-pixel count, percentage, and an explicit verdict line (falls back to a size-mismatch notice if the two screenshots aren't the same dimensions);
+5. the **response-similarity verdict** (http) or `isUsingNewParams`/DOM-mutation verdict (client-routing);
+6. the **React props** of the original node and of the node whose value was spliced into the mutated request/URL, plus the authorization-relevant differences and the keys the classifier flagged.
+
+A failure while generating a script never prevents the finding itself from being recorded.
 
 ### Test fixture: `react-app-target/`
 
@@ -191,6 +215,8 @@ Everything the crawler produces lives in one SQLite file, `db.path` (default `st
 * `crawl_edges` — the click graph: one row per edge (`from`, `to`, action type/target/text/selector).
 * `http_events`, `react_states`, `preindexed_values`, `vulnerabilities`, `analysis_stats`, `authz_classifications` — everything from [IDOR analysis](#idor-analysis-authzidor-detection).
 * `freemium_candidates` — the [Freemium prefilter](#freemium-prefilter) results. Unlike the tables above it is **never** wiped by `db.clearOnStart`: crawler runs do not touch it, and re-checking a domain only overwrites that domain's row.
+
+The only files written outside the database are the generated [reproduction scripts](#reproduction-scripts) under `analysis.reportsDir` (`reports/`).
 
 Crawlee's own bookkeeping (request queue, key-value store) stays separate, under `storage/{datasets,key_value_stores,request_queues}`, and is cleared at the start of each run.
 

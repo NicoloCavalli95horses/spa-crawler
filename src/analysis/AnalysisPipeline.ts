@@ -375,8 +375,9 @@ export class AnalysisPipeline {
   }): void {
     writeReproductionScript({
       id, site, referenceUrl, candidateUrl, motivation, differences, sensitiveKeys,
-      stateId: candidate.stateId, referenceNodeId: candidate.referenceNodeId, candidateNodeId: candidate.candidateNodeId,
-      dbPath: this.deps.options.dbPath, userDataDir: this.deps.options.userDataDir, reportsDir: this.deps.options.reportsDir,
+      referenceValue: String(candidate.referenceValue), candidateValue: candidate.candidateValue,
+      referenceProps: candidate.referenceProps, candidateProps: candidate.candidateProps,
+      userDataDir: this.deps.options.userDataDir, reportsDir: this.deps.options.reportsDir,
       kind,
     });
   }

@@ -83,7 +83,7 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
-  tabsPerSite: 10,
+  tabsPerSite: 5,
   restoreDelayMs: 150,
   viewport: { width: 1920, height: 1080 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
