@@ -81,7 +81,7 @@ export function buildExplorer(
 
   // 3. the algorithm receives everything ready-made
   const analysisPipeline = new AnalysisPipeline({
-    httpEventStore, preindexStore: preindex, reactStateStore: reactState, vulnerabilityStore, statsStore, classifier,
+    httpEventStore, preindexStore: preindex, reactStateStore: reactState, crawlStateStore: crawlStates, vulnerabilityStore, statsStore, classifier,
     options: { maxConcurrentRequests: cfg.analysis.maxConcurrentRequests, timeBetweenRequestsMs: cfg.analysis.timeBetweenRequestsMs },
   });
 

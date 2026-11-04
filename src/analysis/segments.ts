@@ -23,7 +23,8 @@
  */
 
 const MAX_SEGMENTS_HISTORY = 250; // mirrors RAPIDOR's config.js maxSegmentsHistoryLength
-const MAX_PATH_CANDIDATES = 4; // cap per URL regardless of how many indexes the two signals above produce
+const MAX_PATH_CANDIDATES = 5; // cap per URL regardless of how many indexes the two signals above produce
+const MAX_TRAILING_WINDOW = 5; // cap on getTrailingWindowIndexes' own window, same reasoning
 
 export interface SegmentCandidate {
   value: string;
@@ -91,13 +92,18 @@ export class SegmentExtractor {
   }
 
   /**
-   * Indexes of the last N path segments, N scaled to the total segment count: 1 for short paths, up
-   * to 3 for long ones (e.g. busuu's 7-segment lesson URLs). Taken unconditionally, regardless of the
-   * segment's shape — the first segments of a path are usually domain/category, not identifiers, so
-   * restricting to the tail already does most of the filtering without needing a shape guess.
+   * Indexes of the last N path segments, N proportional to the total segment count (roughly half of
+   * it) up to MAX_TRAILING_WINDOW. Taken unconditionally, regardless of the segment's shape — the
+   * first segments of a path are usually domain/category, not identifiers, so restricting to the
+   * tail already does most of the filtering without needing a shape guess.
+   *
+   * A fixed cap (previously always 3) misses ids that sit further from the end on longer paths: e.g.
+   * busuu's 8-segment .../course/start/objective_<uuid>/0_0_0_<hex>/activity_<uuid>/exercise_1 has
+   * its objective_<uuid> id at index 4, one position outside a window of 3 (which only reaches index
+   * 5 onward) — scaling the window with the path length keeps that id inside the window instead.
    */
   private getTrailingWindowIndexes(segmentCount: number): number[] {
-    const windowSize = segmentCount <= 2 ? 1 : segmentCount <= 4 ? 2 : 3;
+    const windowSize = Math.min(MAX_TRAILING_WINDOW, Math.ceil(segmentCount / 2));
     const indexes: number[] = [];
     for (let i = Math.max(0, segmentCount - windowSize); i < segmentCount; i++) indexes.push(i);
     return indexes;
