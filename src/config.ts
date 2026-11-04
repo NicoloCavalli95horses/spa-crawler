@@ -14,6 +14,15 @@ export interface ExtensionConfig {
   calls: ExtensionCall[];
 }
 
+export interface LightweightConfig {
+  enabled: boolean;               // cheaper browsing while exploring: 1ms animations, no paint-only CSS, no images
+  blockImages: boolean;           // images are not loaded (the layout is stable, so fingerprints stay consistent between runs)
+  blockFonts: boolean;            // font files are not loaded: the text uses fallback fonts
+  blockedUrlPatterns: string[];   // Chromium URL patterns (* wildcard) never requested: analytics, ads, session replay
+  cacheStaticAssets: boolean;     // scripts/stylesheets are kept in memory: restoring a state does not download them again
+  assetCacheMaxMb: number;        // cap on the memory used by that cache, per site
+}
+
 export interface CrawlConfig {
   startUrl: string;
   maxDepth: number;
@@ -48,6 +57,7 @@ export interface CrawlConfig {
     maxConcurrentRequests: number; // bounds forged-request concurrency; mirrors RAPIDOR's config.js maxConcurrentRequests
     timeBetweenRequestsMs: number; // pacing after each forged request; mirrors RAPIDOR's config.js timeBetweenRequests
   };
+  lightweight: LightweightConfig;
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
   debugNoCrawling: boolean;     // opens the browser on the URL and waits for the user to close it, without exploring (manual login)
   userDataDir?: string;        // persistent browser profile (optional): cookies and storage survive across runs
@@ -60,7 +70,7 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
-  tabsPerSite: 5,
+  tabsPerSite: 3,
   restoreDelayMs: 150,
   viewport: { width: 1920, height: 1080 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
@@ -90,6 +100,19 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   extraApiDomains: (process.env.EXTRA_API_DOMAINS || 'd3vu3jnt00sinm.cloudfront.net').split(',').map((domain) => domain.trim()).filter(Boolean),
   // DEBUG_NO_CRAWLING=true: no exploration, the browser stays open until you close it (to log in manually into the persistent profile; use with HEADLESS=false)
   debugNoCrawling: process.env.DEBUG_NO_CRAWLING === 'true',
+  // LIGHTWEIGHT=false turns it off; never active with DEBUG_NO_CRAWLING (manual login needs the real page)
+  lightweight: {
+    enabled: process.env.DEBUG_NO_CRAWLING !== 'true' && process.env.LIGHTWEIGHT !== 'false',
+    blockImages: true,
+    blockFonts: true,
+    blockedUrlPatterns: [
+      '*://www.google-analytics.com/*', '*://*.googletagmanager.com/*', '*://*.doubleclick.net/*',
+      '*://connect.facebook.net/*', '*://*.hotjar.com/*', '*://*.clarity.ms/*', '*://*.segment.io/*',
+      '*://*.segment.com/*', '*://*.fullstory.com/*',
+    ],
+    cacheStaticAssets: true,
+    assetCacheMaxMb: 150,
+  },
   // browser extension details: this is launched with the Chromium browser
   extension: {
     path: 'browser_extension/rapidor', // path to th extension (unpacked)

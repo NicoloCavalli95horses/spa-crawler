@@ -104,6 +104,7 @@ Everything is in [src/config.ts](src/config.ts). The most important settings:
 | `includeUrlInFingerprint` | `true` | Two routes with the same layout remain distinct states. |
 | `text.inStateFingerprint` | `true` | Includes visible texts in the state ID. Should be disabled on pages with random content (carousels, recommendations). |
 | `headless` | `true` | `HEADLESS=false` opens the browser window to watch the crawler in action. |
+| `lightweight` | enabled while exploring | Cheaper browsing (`LIGHTWEIGHT=false` turns it off; never active with `DEBUG_NO_CRAWLING`): animations/transitions shortened to 1ms (kept, so modals still get their `animationend`), paint-only CSS dropped (shadows, filters, blur — geometry untouched, so fingerprints are unaffected), images/fonts/analytics not loaded, and scripts/stylesheets kept in an in-memory cache so restoring a state does not download them again (`cacheStaticAssets`; fetch/XHR and the page document always go to the server). |
 | `locale` | `en-US` | Language requested from sites. |
 | `screenshots` | `false` | Saves a PNG of each state. Useful only for visually inspecting results. |
 | `blocklist` | `logout, log out, sign out, quit, delete` | Substrings (case-insensitive) of text, `aria-label`, or `href` of elements that should never be clicked. |

@@ -4,6 +4,7 @@ import { PlaywrightCrawler, Configuration, type FinalStatistics, type RequestOpt
 import { config as defaultConfig, type CrawlConfig, type ExtensionConfig } from './config';
 import { buildExplorer } from './buildExplorer';
 import { extensionLaunchArgs } from './browser/ExtensionCalls';
+import { applyLightweightMode, lightweightLaunchArgs, logAssetCacheSummary, StaticAssetCache } from './browser/lightweightMode';
 import { NetworkObserver } from './browser/NetworkObserver';
 import { installParamUsageTracking } from './browser/paramUsageTracker';
 import { HttpEventStore } from './db/HttpEventStore';
@@ -43,7 +44,8 @@ function persistentBrowserOptions(cfg: CrawlConfig) {
       userDataDir: cfg.userDataDir ?? '',
       launchOptions: {
         headless: cfg.headless,
-        ...(cfg.extension ? { channel: 'chromium', args: extensionLaunchArgs(cfg.extension) } : {}),
+        ...(cfg.extension ? { channel: 'chromium' } : {}),
+        args: [...(cfg.extension ? extensionLaunchArgs(cfg.extension) : []), ...lightweightLaunchArgs({ lightweight: cfg.lightweight })],
         // in a persistent context, page options must be given at launch
         locale: cfg.locale,
         viewport: cfg.viewport,
@@ -62,6 +64,10 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   // one NetworkObserver per request, created in preNavigationHooks (before Crawlee's own first
   // goto, so no request is missed) and read back in requestHandler to pass into buildExplorer
   const networkObservers = new WeakMap<Page, NetworkObserver>();
+  // one asset cache per site, shared by its tabs (created for the first page, read back by the handler)
+  const assetCaches = new WeakMap<Page, StaticAssetCache>();
+  const makeAssetCache = () => cfg.lightweight.enabled && cfg.lightweight.cacheStaticAssets
+    ? new StaticAssetCache(cfg.lightweight.assetCacheMaxMb * 1e6) : undefined;
   // shared by every site/tab in this run: created (and cleared, if configured) exactly once here,
   // not per site, so concurrent sites never wipe each other's rows mid-run. Capture, React-state
   // persistence and the analysis pipeline are always on — there is no feature gate for any of this.
@@ -93,7 +99,7 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
     launchContext: ext?.launchContext ?? {
       useIncognitoPages: true,
       // headful (visible window) when headless is false
-      launchOptions: { headless: cfg.headless },
+      launchOptions: { headless: cfg.headless, args: lightweightLaunchArgs({ lightweight: cfg.lightweight }) },
     },
     browserPoolOptions: ext?.browserPoolOptions ?? {
       // by default Crawlee randomizes the viewport per session: it would make rectangles unstable
@@ -107,6 +113,9 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       async ({ page, request }) => {
         await page.setViewportSize(cfg.viewport);
         await installParamUsageTracking(page);
+        const assetCache = makeAssetCache();
+        if (assetCache) assetCaches.set(page, assetCache);
+        await applyLightweightMode({ page, lightweight: cfg.lightweight, assetCache });
         const observer = new NetworkObserver({
           origin: new URL(request.url).origin, store: httpEventStore, extraApiDomains: cfg.extraApiDomains,
         });
@@ -128,12 +137,14 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       const progress = typeof request.userData.progress === 'string' ? `${request.userData.progress} ` : '';
       log.info(`${progress}Exploring ${site} (${rootUrl})`);
       const network = networkObservers.get(page);
+      const assetCache = assetCaches.get(page);
       // extra tabs in the same context: cookies and storage shared with the first one
       const extraPages = await Promise.all(
         Array.from({ length: Math.max(0, cfg.tabsPerSite - 1) }, async () => {
           const p = await page.context().newPage();
           await p.setViewportSize(cfg.viewport);
           await installParamUsageTracking(p);
+          await applyLightweightMode({ page: p, lightweight: cfg.lightweight, assetCache });
           network?.attach(p);   // before any navigation happens on it: nothing is missed
           return p;
         }),
@@ -141,6 +152,7 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       try {
         await buildExplorer(rootUrl, cfg, site, { ...deps, network }).explore(page, extraPages);
         log.info(`${progress}Finished ${site}`);
+        logAssetCacheSummary({ assetCache, site });
       } finally {
         await Promise.all(extraPages.map((p) => p.close().catch(() => {})));
       }
