@@ -1,14 +1,16 @@
+import 'dotenv/config'; // loads .env into process.env before any field below reads it
 export interface ExtensionCall {
-  fn: string;                              // name on window, e.g. '__RAPIDOR__getData'
-  // start: before the exploration; end: after the last state; before-action: before each action on
-  // a page; after-action: after each action, on the resulting page. before/after-action results are
+  fn: string;  // name on window, e.g. '__RAPIDOR__getData'
+  // - start: before the exploration;
+  // - end: after the last state; before-action: before each action on a page;
+  // - after-action: after each action, on the resulting page. before/after-action results are
   // treated as "ready"/"not ready" and never block the crawl.
   when: 'start' | 'end' | 'before-action' | 'after-action';
-  args?: unknown[];              // arguments, JSON-serializable
+  args?: unknown[]; // arguments, JSON-serializable
 }
 
 export interface ExtensionConfig {
-  path: string;                  // extension folder (the one with manifest.json), unpacked
+  path: string; // extension folder (the one with manifest.json), unpacked
   calls: ExtensionCall[];
 }
 
@@ -20,7 +22,7 @@ export interface CrawlConfig {
   concurrency: number;          // sites explored in parallel
   tabsPerSite: number;          // tabs exploring the same site together (same context: shared cookies and storage)
   restoreDelayMs: number;       // minimum gap between two reloads of the same site (all tabs together)
-  viewport: { width: number; height: number };  // fixed: rectangles depend on the viewport
+  viewport: { width: number; height: number };
   stability: { quietMs: number; timeoutMs: number; longRequestMs: number };
   rectGridPx: number;           // rectangle rounding in the fingerprint
   includeUrlInFingerprint: boolean;
@@ -47,29 +49,24 @@ export interface CrawlConfig {
     timeBetweenRequestsMs: number; // pacing after each forged request; mirrors RAPIDOR's config.js timeBetweenRequests
   };
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
-  // authentication is deliberately not configurable through env vars/files: log in once by hand
-  // (HEADLESS=false + DEBUG_NO_CRAWLING=true, with userDataDir set) and the persistent profile
-  // keeps cookies/tokens for every run afterwards. Less error-prone than copying credentials
-  // around, and nothing secret ever needs to be written to disk as plain config.
   debugNoCrawling: boolean;     // opens the browser on the URL and waits for the user to close it, without exploring (manual login)
   userDataDir?: string;        // persistent browser profile (optional): cookies and storage survive across runs
+  extraApiDomains: string[];   // backend domains to treat as first-party even though they don't share a base domain with startUrl (e.g. a CloudFront/API Gateway backend)
 }
 
 export const config: Readonly<CrawlConfig> = Object.freeze({
-  // the protocol is required, otherwise Crawlee discards the URL
-  startUrl: process.env.START_URL ?? 'http://localhost:3000',
+  startUrl: process.env.START_URL || 'http://localhost:3000',
   maxDepth: 2,
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
-  tabsPerSite: 5, // this must correlates to `maxStateSnapshots` in RAPIDOR, increase both if needed
+  tabsPerSite: 5,
   restoreDelayMs: 150,
   viewport: { width: 1920, height: 1080 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
   rectGridPx: 4,
   includeUrlInFingerprint: true,
   // texts are normalized (digits -> '#'); on pages with random content
-  // (recommendations, carousels) it is better to disable inStateFingerprint
   text: { inElementId: true, inStateFingerprint: true, maxBlocks: 2000, maxBlockLength: 200 },
   actionTimeoutMs: 5_000,
   // PNG images of the states: not needed by the exploration, only to inspect it by eye
@@ -84,39 +81,27 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   ignoreClickablesWithin: ['nav', 'header', 'footer'],
   // close blocking modals (Escape, then an explicit close control) before capturing a state
   dismissOverlays: true,
-  // single SQLite file every store in the run writes into (crawl states/edges, HTTP events, React
-  // state, IDOR findings, stats, the authz classifier cache) — the only artifact the crawler produces
+  // single SQLite file every store
   db: { path: 'storage/crawler.db', clearOnStart: true, clearClassifierCache: false },
-  // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline; always on
-  analysis: { maxConcurrentRequests: 3, timeBetweenRequestsMs: 800 },
-  // Chrome extension: call results end up in the KeyValueStore as
-  // `<site>--extension-<when>-<fn>`. The functions must live in the page's MAIN world
-  // (content script with "world": "MAIN" in the manifest), otherwise window cannot see them.
-  // persistent profile: USER_DATA_DIR=/path/to/profile npm start. Do not point to the Chrome
-  // profile in use (it is locked, and Chrome 136+ forbids automation on that folder):
-  // use a dedicated folder, or a copy of the profile. Requires concurrency: 1.
-  userDataDir: process.env.USER_DATA_DIR,
-  // DEBUG_NO_CRAWLING=true: no exploration, the browser stays open until you close it
-  // (to log in manually into the persistent profile; use with HEADLESS=false)
+  // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline
+  analysis: { maxConcurrentRequests: 3, timeBetweenRequestsMs: 500 },
+  userDataDir: process.env.USER_DATA_DIR || undefined,
+  // EXTRA_API_DOMAINS="api.example.com,d123.cloudfront.net" (comma-separated) for backends hosted off the app's own base domain
+  extraApiDomains: (process.env.EXTRA_API_DOMAINS || 'd3vu3jnt00sinm.cloudfront.net').split(',').map((domain) => domain.trim()).filter(Boolean),
+  // DEBUG_NO_CRAWLING=true: no exploration, the browser stays open until you close it (to log in manually into the persistent profile; use with HEADLESS=false)
   debugNoCrawling: process.env.DEBUG_NO_CRAWLING === 'true',
-  // RAPIDOR runs in 'minimal' mode (its own config.js): it only emits React state (Bridge+
-  // StateManager), so the only calls that still matter are the settle/wait handshake around each
-  // action (the crawler reads window.__RAPIDOR__getLatestState itself, via ReactStateHooks) and the
-  // start/end bookkeeping. __RAPIDOR__waitForAnalysis is gone from this list on purpose: in minimal
-  // mode it's a no-op that always resolves immediately (no AnalysisManager is ever constructed to
-  // feed it work) now that the whole analysis pipeline runs server-side.
+  // browser extension details: this is launched with the Chromium browser
   extension: {
-    path: '../rapidor/packages/react-devtools-extensions/chrome/build/unpacked',
+    path: 'browser_extension/rapidor', // path to th extension (unpacked)
     calls: [
-      // clears the extension's shared IndexedDB once, so a run on a persistent profile starts clean
+      // [called on start] clears the extension's shared IndexedDB once, so a run on a persistent profile starts clean
       { fn: '__RAPIDOR__reset', when: 'start' },
-      // before acting on a page, force-settle and wait until React state has been captured for it
+      // [called before an action on the page] force-settle and wait until React state has been captured for it
       // (otherwise a fast reload would navigate away before ReactStateHooks can read it)
       { fn: '__RAPIDOR__waitToAction', when: 'before-action', args: [{ timeoutMs: 3000 }] },
-      // after acting, settle again so the clicked-into state is ready the moment ReactStateHooks reads it
+      // [called after an action on the page] settle again so the clicked-into state is ready the moment ReactStateHooks reads it
       { fn: '__RAPIDOR__waitToAction', when: 'after-action', args: [{ timeoutMs: 8000 }] },
-      // kept only to surface extension runtime errors to the crawler log (ExtensionCalls.reportRuntimeErrors);
-      // its `stats` are not used for anything anymore — the crawler's own DB is the source of truth
+      // [called on analysis end] kept only to surface extension runtime errors to the crawler log
       { fn: '__RAPIDOR__getData', when: 'end' },
     ],
   },

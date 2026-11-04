@@ -27,6 +27,8 @@ export interface NetworkObserverOptions {
   origin: string;
   maxBodyBytes?: number;   // caps the saved response body; default 200KB
   store?: HttpEventStore;  // deduplicated persistence, shared across every tab exploring this site
+  extraApiDomains?: string[];  // first-party API domains that don't share a base domain with `origin`
+                                // (e.g. a CloudFront/API Gateway backend); matched the same way as origin itself
 }
 
 const DEFAULT_MAX_BODY_BYTES = 200_000;
@@ -38,7 +40,7 @@ const DEFAULT_MAX_BODY_BYTES = 200_000;
  */
 export class NetworkObserver {
   private site: string;
-  private baseDomain: string;
+  private allowedBaseDomains: Set<string>;
   private maxBodyBytes: number;
   private store?: HttpEventStore;
   private requests: CapturedRequest[] = [];
@@ -46,9 +48,9 @@ export class NetworkObserver {
     total: 0, byMethod: {}, byStatus: {}, failed: 0, skippedOffDomain: 0,
   };
 
-  constructor({ origin, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, store }: NetworkObserverOptions) {
+  constructor({ origin, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, store, extraApiDomains = [] }: NetworkObserverOptions) {
     this.site = new URL(origin).hostname;
-    this.baseDomain = baseDomain(this.site);
+    this.allowedBaseDomains = new Set([baseDomain(this.site), ...extraApiDomains.map(baseDomain)]);
     this.maxBodyBytes = maxBodyBytes;
     this.store = store;
   }
@@ -67,10 +69,15 @@ export class NetworkObserver {
     return { requests: this.requests, stats: this.stats };
   }
 
-  /** Same-domain-or-subdomain check, mirroring HTTPAnalyzer.isAllowed/getBaseDomain in RAPIDOR. */
+  /**
+   * Same-domain-or-subdomain check, mirroring HTTPAnalyzer.isAllowed/getBaseDomain in RAPIDOR, extended
+   * with `extraApiDomains`: many real apps serve their API from a backend that shares no base domain
+   * with the page (CloudFront, API Gateway, a separate SaaS domain, ...), which the plain RAPIDOR-style
+   * check would otherwise discard outright.
+   */
   private isSameSite(url: string): boolean {
     try {
-      return baseDomain(new URL(url).hostname) === this.baseDomain;
+      return this.allowedBaseDomains.has(baseDomain(new URL(url).hostname));
     } catch {
       return false;
     }

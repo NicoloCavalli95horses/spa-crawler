@@ -107,7 +107,9 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
       async ({ page, request }) => {
         await page.setViewportSize(cfg.viewport);
         await installParamUsageTracking(page);
-        const observer = new NetworkObserver({ origin: new URL(request.url).origin, store: httpEventStore });
+        const observer = new NetworkObserver({
+          origin: new URL(request.url).origin, store: httpEventStore, extraApiDomains: cfg.extraApiDomains,
+        });
         observer.attach(page);
         networkObservers.set(page, observer);
       },
