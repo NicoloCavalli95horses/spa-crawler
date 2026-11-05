@@ -22,6 +22,7 @@ export interface AnalysisPipelineOptions {
   dbPath: string;          // so a generated reproduction script can re-read the exact React snapshot a finding came from
   userDataDir?: string;    // so it can reopen the same (authenticated, if persistent) browser profile
   reportsDir: string;      // reproduction scripts land in <reportsDir>/<site>/<findingId>.repro.ts
+  clientRoutingProbe: { minWaitMs: number; idleMs: number };  // see config.analysis.clientRoutingProbe's own comment
 }
 
 export interface AnalysisPipelineDeps {
@@ -249,16 +250,24 @@ export class AnalysisPipeline {
       // place (the pageUrls loop below, see evaluateClientRoutingPathCandidate).
       if (!segment.paramName) return;
       const paramName = segment.paramName;
+      const { clientRoutingProbe } = options;
       const clientRouting = await this.enqueueClientRoutingCheck({
-        page, pageUrl: event.pageUrl, run: () => checkClientSideRouting({ page, paramName, paramValue: candidate.candidateValue }),
+        page, pageUrl: event.pageUrl,
+        run: () => checkClientSideRouting({ page, paramName, paramValue: candidate.candidateValue, ...clientRoutingProbe }),
       });
-      if (!clientRouting.isUsingNewParams) return;
+      if (!clientRouting.isUsingNewParams) {
+        log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${event.pageUrl} ?${paramName}=${candidate.candidateValue}`);
+        return;
+      }
       detectionMethod = 'client-routing';
     }
 
     const differences = compareObj(candidate.referenceProps, candidate.candidateProps);
     const authz = await assessAuthZ({ differences, classifier });
-    if (!authz.isAuthzRelevant) return;
+    if (!authz.isAuthzRelevant) {
+      log.debug(`AnalysisPipeline: candidate rejected (no authz-relevant diff, sensitiveKeys=${JSON.stringify(authz.sensitiveKeys)}) — ${event.method} ${event.url} -> ${url} | ${describeDiffs(differences)}`);
+      return;
+    }
 
     const id = vulnerabilityId({ candidateValue: candidate.candidateValue, nodeId: candidate.candidateNodeId, method: event.method, url });
     const inserted = vulnerabilityStore.record({
@@ -290,16 +299,24 @@ export class AnalysisPipeline {
     page: Page; site: string; pageUrl: string; paramName: string; candidateUrl: string;
     candidate: ReturnType<typeof findCandidates>[number];
   }): Promise<void> {
-    const { vulnerabilityStore, classifier } = this.deps;
+    const { vulnerabilityStore, classifier, options } = this.deps;
+    const { clientRoutingProbe } = options;
 
     const clientRouting = await this.enqueueClientRoutingCheck({
-      page, pageUrl, run: () => checkClientSideRouting({ page, paramName, paramValue: candidate.candidateValue }),
+      page, pageUrl,
+      run: () => checkClientSideRouting({ page, paramName, paramValue: candidate.candidateValue, ...clientRoutingProbe }),
     });
-    if (!clientRouting.isUsingNewParams) return;
+    if (!clientRouting.isUsingNewParams) {
+      log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${pageUrl} ?${paramName}=${candidate.candidateValue}`);
+      return;
+    }
 
     const differences = compareObj(candidate.referenceProps, candidate.candidateProps);
     const authz = await assessAuthZ({ differences, classifier });
-    if (!authz.isAuthzRelevant) return;
+    if (!authz.isAuthzRelevant) {
+      log.debug(`AnalysisPipeline: candidate rejected (no authz-relevant diff, sensitiveKeys=${JSON.stringify(authz.sensitiveKeys)}) — ${pageUrl} -> ${candidateUrl} | ${describeDiffs(differences)}`);
+      return;
+    }
 
     const id = vulnerabilityId({
       candidateValue: candidate.candidateValue, nodeId: candidate.candidateNodeId,
@@ -333,16 +350,24 @@ export class AnalysisPipeline {
     page: Page; site: string; pageUrl: string; candidateUrl: string;
     candidate: ReturnType<typeof findCandidates>[number];
   }): Promise<void> {
-    const { vulnerabilityStore, classifier } = this.deps;
+    const { vulnerabilityStore, classifier, options } = this.deps;
+    const { clientRoutingProbe } = options;
 
     const clientRouting = await this.enqueueClientRoutingCheck({
-      page, pageUrl, run: () => checkClientSideRoutingForPath({ page, targetUrl: candidateUrl }),
+      page, pageUrl,
+      run: () => checkClientSideRoutingForPath({ page, targetUrl: candidateUrl, ...clientRoutingProbe }),
     });
-    if (!clientRouting.isUsingNewParams) return;
+    if (!clientRouting.isUsingNewParams) {
+      log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${pageUrl} -> ${candidateUrl}`);
+      return;
+    }
 
     const differences = compareObj(candidate.referenceProps, candidate.candidateProps);
     const authz = await assessAuthZ({ differences, classifier });
-    if (!authz.isAuthzRelevant) return;
+    if (!authz.isAuthzRelevant) {
+      log.debug(`AnalysisPipeline: candidate rejected (no authz-relevant diff, sensitiveKeys=${JSON.stringify(authz.sensitiveKeys)}) — ${pageUrl} -> ${candidateUrl} | ${describeDiffs(differences)}`);
+      return;
+    }
 
     const id = vulnerabilityId({
       candidateValue: candidate.candidateValue, nodeId: candidate.candidateNodeId,
@@ -378,6 +403,7 @@ export class AnalysisPipeline {
       referenceValue: String(candidate.referenceValue), candidateValue: candidate.candidateValue,
       referenceProps: candidate.referenceProps, candidateProps: candidate.candidateProps,
       userDataDir: this.deps.options.userDataDir, reportsDir: this.deps.options.reportsDir,
+      clientRoutingProbe: this.deps.options.clientRoutingProbe,
       kind,
     });
   }
@@ -405,7 +431,7 @@ export class AnalysisPipeline {
       if (page.url() !== pageUrl) {
         await page.goto(pageUrl, { waitUntil: 'load', timeout: 10_000 }).catch(() => undefined);
       }
-      let attempt: ClientRoutingResult = { hasMutatedDom: false, isUsingNewParams: false };
+      let attempt: ClientRoutingResult = { hasMutatedDom: false, isUsingNewParams: false, finalUrl: pageUrl };
       for (let i = 0; i < MAX_CLIENT_ROUTING_ATTEMPTS; i++) {
         attempt = await run();
         if (attempt.isUsingNewParams) return attempt;
@@ -445,4 +471,18 @@ function normalizeUrl(raw: string): string {
   } catch {
     return raw;
   }
+}
+
+/**
+ * Explains a negative client-routing probe for the debug log: distinguishes "the app never reacted
+ * at all" from "the app DID mutate the DOM, but it redirected away from the candidate's own path" —
+ * the busuu false positive (dashboard/review -> dashboard/dashboard, silently redirected by the
+ * app's own router to dashboard/timeline) that motivated checkClientSideRouting*'s own redirect
+ * guard. Without this distinction a rejected-by-redirect candidate logs identically to one the app
+ * genuinely ignored, hiding exactly the case worth double-checking by hand.
+ */
+function describeClientRoutingRejection(result: ClientRoutingResult): string {
+  return result.hasMutatedDom
+    ? `DOM mutated but the app redirected away to ${result.finalUrl}`
+    : 'no client-side DOM reaction';
 }

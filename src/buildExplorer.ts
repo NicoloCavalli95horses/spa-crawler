@@ -85,6 +85,7 @@ export function buildExplorer(
     options: {
       maxConcurrentRequests: cfg.analysis.maxConcurrentRequests, timeBetweenRequestsMs: cfg.analysis.timeBetweenRequestsMs,
       dbPath: cfg.db.path, userDataDir: cfg.userDataDir, reportsDir: cfg.analysis.reportsDir,
+      clientRoutingProbe: cfg.analysis.clientRoutingProbe,
     },
   });
 

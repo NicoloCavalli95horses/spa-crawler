@@ -39,11 +39,32 @@ export interface ReproductionInput {
   userDataDir?: string;
   reportsDir: string;
   kind: ReproductionKind;
+  clientRoutingProbe: { minWaitMs: number; idleMs: number };  // embedded verbatim so a re-run of this script tests the exact same window the original run used
 }
 
 /** JS literal, not JSON.stringify: keeps `undefined` as `undefined` rather than dropping the key silently. */
 function literal(value: unknown): string {
   return value === undefined ? 'undefined' : JSON.stringify(value, null, 2);
+}
+
+/**
+ * literal() above only guards a top-level undefined: JSON.stringify still silently drops any
+ * undefined-valued KEY nested inside an object it's given, which is exactly what a PropDiff looks
+ * like whenever a prop exists on only one side of the diff (compareObj leaves `reference` or
+ * `current` undefined — see responseEvaluate.ts's own doc comment). The embedded DIFFERENCES array
+ * must keep both keys present (even when `undefined`) or the generated script fails to typecheck
+ * against the PropDiff type it imports — this is the actual bug behind the lint/tsc errors on
+ * existing reproduction scripts. Each field goes through literal() individually instead of
+ * stringifying the whole array/object in one JSON.stringify call.
+ */
+function literalPropDiff(d: PropDiff): string {
+  return `{ "path": ${literal(d.path)}, "reference": ${literal(d.reference)}, `
+    + `"current": ${literal(d.current)}, "key": ${literal(d.key)}, "pathStr": ${literal(d.pathStr)} }`;
+}
+
+function literalDiffs(differences: PropDiff[]): string {
+  if (differences.length === 0) return '[]';
+  return `[\n  ${differences.map(literalPropDiff).join(',\n  ')}\n]`;
 }
 
 function reproductionBody(input: ReproductionInput): string {
@@ -95,9 +116,10 @@ function reproductionBody(input: ReproductionInput): string {
   const paramName = isQuery ? kind.paramName : '';
   const probeSetup = isQuery ? `await installParamUsageTracking(page); // init script: must run before the first navigation` : '';
   const probeImport = isQuery ? `const { installParamUsageTracking } = await import('../../src/browser/paramUsageTracker');` : '';
+  const { minWaitMs, idleMs } = input.clientRoutingProbe;
   const probe = isQuery
-    ? `checkClientSideRouting({ page, paramName: ${literal(paramName)}, paramValue: CANDIDATE_VALUE })`
-    : `checkClientSideRoutingForPath({ page, targetUrl: CANDIDATE_URL })`;
+    ? `checkClientSideRouting({ page, paramName: ${literal(paramName)}, paramValue: CANDIDATE_VALUE, minWaitMs: ${minWaitMs}, idleMs: ${idleMs} })`
+    : `checkClientSideRoutingForPath({ page, targetUrl: CANDIDATE_URL, minWaitMs: ${minWaitMs}, idleMs: ${idleMs} })`;
 
   return `
   const { checkClientSideRouting, checkClientSideRoutingForPath } = await import('../../src/analysis/clientRouting');
@@ -247,7 +269,7 @@ const BASE_NAME = ${literal(baseName)}; // screenshots/diff share this name, nex
 const BODY_PREVIEW_CHARS = 1500;
 const REFERENCE_PROPS = ${literal(input.referenceProps)};
 const CANDIDATE_PROPS = ${literal(input.candidateProps)};
-const DIFFERENCES: PropDiff[] = ${literal(input.differences)};
+const DIFFERENCES: PropDiff[] = ${literalDiffs(input.differences)};
 const SENSITIVE_KEYS = ${literal(input.sensitiveKeys)};
 ${HELPERS}
 async function main() {

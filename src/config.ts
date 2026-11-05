@@ -67,6 +67,15 @@ export interface CrawlConfig {
     maxConcurrentRequests: number; // bounds forged-request concurrency; mirrors RAPIDOR's config.js maxConcurrentRequests
     timeBetweenRequestsMs: number; // pacing after each forged request; mirrors RAPIDOR's config.js timeBetweenRequests
     reportsDir: string;            // where each flagged finding's reproduction script lands: <reportsDir>/<site>/<findingId>.repro.ts
+    // window the client-side-routing probe (checkClientSideRouting/checkClientSideRoutingForPath)
+    // waits for a DOM mutation after a synthetic pushState+popstate. Was hardcoded at 500/100ms —
+    // far shorter than the rest of the pipeline's own settle windows (stability.timeoutMs: 10s,
+    // the extension's own wait-to-action: 3-8s, see config.extension.calls below), so an SPA route
+    // change that triggers a real network fetch (e.g. a lazily-loaded exercise/resource) could
+    // consistently read as "did not react", producing a false negative on every attempt rather
+    // than a flaky one. Sized closer to those windows so a genuinely slow-but-real re-render is
+    // still caught; still bounded so a route that truly ignores the segment doesn't stall analysis.
+    clientRoutingProbe: { minWaitMs: number; idleMs: number };
   };
   lightweight: LightweightConfig;
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
@@ -79,11 +88,11 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   startUrl: process.env.START_URL || 'http://localhost:3000',
   // START_URLS="https://a.com,https://b.com" (comma and/or newline separated, quoted in .env if on several lines), or fill the array here: replaces startUrl in `npm start`
   startUrls: (process.env.START_URLS || '').split(/[\s,]+/).filter(Boolean),
-  maxDepth: 2,
+  maxDepth: 3,
   maxStates: 500,
   maxDurationSecs: 1800,
   concurrency: 1,
-  tabsPerSite: 5,
+  tabsPerSite: 15,
   restoreDelayMs: 150,
   viewport: { width: 1920, height: 1080 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
@@ -107,7 +116,10 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // single SQLite file every store
   db: { path: 'storage/crawler.db', clearOnStart: true, clearClassifierCache: false },
   // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline
-  analysis: { maxConcurrentRequests: 3, timeBetweenRequestsMs: 500, reportsDir: 'reports' },
+  analysis: {
+    maxConcurrentRequests: 3, timeBetweenRequestsMs: 500, reportsDir: 'reports',
+    clientRoutingProbe: { minWaitMs: 3_000, idleMs: 300 },
+  },
   // USER_DATA_DIR enables a persistent profile (~ and $HOME are expanded); when unset, a temporary profile is used
   userDataDir: process.env.USER_DATA_DIR ? expandHome({ value: process.env.USER_DATA_DIR }) : undefined,
   // EXTRA_API_DOMAINS="api.example.com,d123.cloudfront.net" (comma-separated) for backends hosted off the app's own base domain

@@ -3,6 +3,11 @@ import type { Page } from 'playwright';
 export interface ClientRoutingResult {
   isUsingNewParams: boolean;
   hasMutatedDom: boolean;
+  // window.location.href right after the idle wait, before the probe rolls the URL back. Lets a
+  // caller tell "the app rendered the candidate" apart from "the app's router rejected the candidate
+  // and redirected elsewhere" — both mutate the DOM, but only the first is evidence of anything. See
+  // isUsingNewParams's own redirect guard below for why this matters.
+  finalUrl: string;
 }
 
 /**
@@ -52,9 +57,23 @@ const WAIT_DOM_IDLE_SRC = `
  * pushState alone does not fire anything) and watches whether the DOM reacts; always rolls the URL
  * back, even on an unexpected error. Requires `installParamUsageTracking` to have already run on
  * `page` (an init script, so it is in place before any app code loads).
+ *
+ * `minWaitMs`/`idleMs` size the waitDomIdle window: AnalysisPipeline passes config.analysis.
+ * clientRoutingProbe explicitly, sized to match the rest of the pipeline's own settle windows rather
+ * than the much shorter 500/100ms this used to hardcode — see that config field's own comment.
+ * Optional here (defaulting to that same config value) only so standalone scripts and previously
+ * generated reproduction scripts that call this directly, without threading the config through,
+ * keep compiling and behave the same as a real pipeline run.
+ *
+ * `isUsingNewParams` also requires the browser to still be sitting on `testUrl`'s own pathname once
+ * the DOM settles: a false positive observed on busuu (dashboard/review -> dashboard/dashboard,
+ * client-routing-path) showed the app's router silently redirecting an unrecognized route to its own
+ * fallback (dashboard/timeline) — a real DOM mutation (the fallback page rendering), but evidence the
+ * candidate was REJECTED, not accepted. Without this guard that redirect reads identically to a
+ * genuine "the app rendered the candidate's content".
  */
-export async function checkClientSideRouting({ page, paramName, paramValue }: {
-  page: Page; paramName: string; paramValue: string;
+export async function checkClientSideRouting({ page, paramName, paramValue, minWaitMs = 3_000, idleMs = 300 }: {
+  page: Page; paramName: string; paramValue: string; minWaitMs?: number; idleMs?: number;
 }): Promise<ClientRoutingResult> {
   const script = `(async () => {
     const paramName = ${JSON.stringify(paramName)};
@@ -69,20 +88,25 @@ export async function checkClientSideRouting({ page, paramName, paramValue }: {
     ${WAIT_DOM_IDLE_SRC}
 
     let hasMutatedDom = false;
+    let finalUrl = originalUrl;
     try {
       window.history.pushState({ ignore: true }, '', testUrl);
       // started BEFORE dispatchEvent: see WAIT_DOM_IDLE_SRC's doc comment above.
-      const idle = waitDomIdle(500, 100);
+      const idle = waitDomIdle(${minWaitMs}, ${idleMs});
       window.dispatchEvent(new Event('popstate'));
       hasMutatedDom = await idle;
+      finalUrl = window.location.href; // read before the rollback below moves it back
     } finally {
       window.history.pushState({ ignore: true }, '', originalUrl);
       window.dispatchEvent(new Event('popstate'));
     }
 
+    const stayedOnTestPath = new URL(finalUrl).pathname === testUrl.pathname;
+
     return {
       hasMutatedDom: hasMutatedDom,
-      isUsingNewParams: Boolean(w.__accessedParams && w.__accessedParams.has(paramName)) && hasMutatedDom,
+      finalUrl: finalUrl,
+      isUsingNewParams: Boolean(w.__accessedParams && w.__accessedParams.has(paramName)) && hasMutatedDom && stayedOnTestPath,
     };
   })()`;
 
@@ -100,9 +124,18 @@ export async function checkClientSideRouting({ page, paramName, paramValue }: {
  * principle mutate for an unrelated reason while the app ignores the new segment. `targetUrl` is the
  * full replacement URL (already spliced by the caller via spliceSegment): simpler than trying to
  * reconstruct a URLSearchParams-style builder for an arbitrary path shape.
+ *
+ * `minWaitMs`/`idleMs`: see checkClientSideRouting's own doc comment above (optional, same default).
+ *
+ * `isUsingNewParams` also requires the browser to still be on `targetUrl`'s own pathname once the
+ * DOM settles — see checkClientSideRouting's own doc comment above for the busuu false positive
+ * (a router redirecting an unrecognized path to its fallback) this guards against. It matters even
+ * more here than in the query-param probe above: there is no __accessedParams signal for a path
+ * segment at all, so hasMutatedDom used to be the ENTIRE signal — any redirect-away looked identical
+ * to a genuine accept.
  */
-export async function checkClientSideRoutingForPath({ page, targetUrl }: {
-  page: Page; targetUrl: string;
+export async function checkClientSideRoutingForPath({ page, targetUrl, minWaitMs = 3_000, idleMs = 300 }: {
+  page: Page; targetUrl: string; minWaitMs?: number; idleMs?: number;
 }): Promise<ClientRoutingResult> {
   const script = `(async () => {
     const targetUrl = ${JSON.stringify(targetUrl)};
@@ -111,18 +144,22 @@ export async function checkClientSideRoutingForPath({ page, targetUrl }: {
     ${WAIT_DOM_IDLE_SRC}
 
     let hasMutatedDom = false;
+    let finalUrl = originalUrl;
     try {
       window.history.pushState({ ignore: true }, '', targetUrl);
       // started BEFORE dispatchEvent: see WAIT_DOM_IDLE_SRC's doc comment above.
-      const idle = waitDomIdle(500, 100);
+      const idle = waitDomIdle(${minWaitMs}, ${idleMs});
       window.dispatchEvent(new Event('popstate'));
       hasMutatedDom = await idle;
+      finalUrl = window.location.href; // read before the rollback below moves it back
     } finally {
       window.history.pushState({ ignore: true }, '', originalUrl);
       window.dispatchEvent(new Event('popstate'));
     }
 
-    return { hasMutatedDom: hasMutatedDom, isUsingNewParams: hasMutatedDom };
+    const stayedOnTargetPath = new URL(finalUrl).pathname === new URL(targetUrl).pathname;
+
+    return { hasMutatedDom: hasMutatedDom, finalUrl: finalUrl, isUsingNewParams: hasMutatedDom && stayedOnTargetPath };
   })()`;
 
   return page.evaluate(script) as Promise<ClientRoutingResult>;

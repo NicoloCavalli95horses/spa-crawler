@@ -47,7 +47,11 @@ describe('AnalysisPipeline: client-side-only query params', () => {
     const classifier = new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: true }));
     const pipeline = new AnalysisPipeline({
       httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, classifier,
-      options: { maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports') },
+      options: {
+        maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports'),
+        // test pages react near-instantly: a short window keeps the suite fast without masking a real miss
+        clientRoutingProbe: { minWaitMs: 300, idleMs: 50 },
+      },
     });
     return { pipeline, httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, classifier };
   }
@@ -128,7 +132,10 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
     const classifier = new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: true }));
     const pipeline = new AnalysisPipeline({
       httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, classifier,
-      options: { maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports') },
+      options: {
+        maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports'),
+        clientRoutingProbe: { minWaitMs: 300, idleMs: 50 },
+      },
     });
     return { pipeline, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, classifier };
   }
@@ -172,6 +179,50 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
 
     const findings = vulnerabilityStore.count('app.test');
     assert.equal(findings, 1);
+  });
+
+  // Regression: busuu's own dashboard/review -> dashboard/dashboard/weak (client-routing-path). The
+  // candidate's own path segment was rejected by the app's router, which silently redirected (client-
+  // side, no new network request) to its fallback route — a real DOM mutation (the fallback page
+  // rendering), but evidence the candidate was REJECTED, not that the app rendered its content. The
+  // old single-signal hasMutatedDom check could not tell the two apart.
+  const redirectingHtml = `<div id="out"></div><script>
+    function render() {
+      const segs = location.pathname.split('/').filter(Boolean);
+      const out = document.getElementById('out');
+      if (segs[0] === 'users' && segs[1] === '101') {
+        out.innerHTML = '<p>' + segs[1] + '</p>';
+      } else if (segs[0] === 'home') {
+        out.innerHTML = '<p>home</p>';
+      } else {
+        // unknown route: the app's own router redirects to its fallback, like busuu's dashboard/timeline
+        history.pushState({}, '', '/home');
+        render();
+      }
+    }
+    window.addEventListener('popstate', render);
+    render();
+  </script>`;
+
+  it('never flags a path candidate the app rejected by silently redirecting elsewhere (client-side, no new request)', async () => {
+    const { pipeline, preindexStore, reactStateStore, vulnerabilityStore, classifier } = newPipeline();
+    (classifier as unknown as { cache: Map<string, unknown> }).cache.set('id', { score: 0, isAuthZRelevant: false });
+    // would have been flagged if the redirect-away were mistaken for a genuine accept
+    (classifier as unknown as { cache: Map<string, unknown> }).cache.set('premium', { score: 1, isAuthZRelevant: true });
+
+    const page = await newPage();
+    await installParamUsageTracking(page);
+    await page.route(`${APP_ORIGIN}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: redirectingHtml }));
+    const pageUrl = `${APP_ORIGIN}/users/101/profile`;
+    await page.goto(pageUrl);
+
+    const graph = siblingGraph();
+    const stateId = reactStateStore.record({ site: 'app.test', url: pageUrl, graph })!;
+    preindexStore.reindex({ stateId, graph });
+
+    await pipeline.runForSite({ page, site: 'app.test', explorationMs: 1000 });
+
+    assert.equal(vulnerabilityStore.count('app.test'), 0);
   });
 
   it('never flags anything when the differing props are not authz-relevant', async () => {
