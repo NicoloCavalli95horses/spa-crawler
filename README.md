@@ -227,23 +227,9 @@ npm run stats                              # per-site crawl + IDOR stats, cross-
 npm run stats -- --db storage/other-run.db # or any other SQLite file in that shape
 ```
 
-## Freemium prefilter
+## Freemium study
 
-Narrows a Tranco range down to sites worth a manual login and a full crawl. The first filter is React (the engine only supports React apps): static markup markers, or a rendered page where react-dom registers with the devtools hook. Only React sites are then scored, by UI phrases whose embedding is close to paywall concepts plus known billing scripts (`js.stripe.com`, ...). Results go into `freemium_candidates` in `db.path`. Domains already in that table are skipped, so widening the range only checks the new ones; pass `--recheck` to check them again.
-
-```bash
-npm run freemium-prefilter -- --top 500
-npm run freemium-prefilter -- --top 500 --include memrise.com,busuu.com
-
-# list the stored candidates (React only, best score first)
-npm run freemium-list                              # all, as a table
-npm run freemium-list -- --top 20                  # only the first 20
-npm run freemium-list -- --top 20 --format domains # bare domains, one per line
-npm run freemium-list -- --format json > candidates.json
-npm run freemium-list -- --min-score 3 --include-non-react
-```
-
-`freemium-list` options: `--top N` (default all), `--min-score` (default `1`), `--format table|domains|json`, `--include-non-react`, `--db`.
+The large-scale freemium / React study over Tranco moved to its own project, `../tranco-freemium-study`. `npm run tranco` below stays here: it runs the full crawler on Tranco sites.
 
 ## Tranco List
 
