@@ -229,7 +229,7 @@ npm run stats -- --db storage/other-run.db # or any other SQLite file in that sh
 
 ## Freemium study
 
-The large-scale freemium / React study over Tranco moved to its own project, `../tranco-freemium-study`. `npm run tranco` below stays here: it runs the full crawler on Tranco sites.
+`npm run tranco` runs the full crawler on Tranco sites
 
 ## Tranco List
 
