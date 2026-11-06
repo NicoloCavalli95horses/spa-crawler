@@ -88,12 +88,12 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   startUrl: process.env.START_URL || 'http://localhost:3000',
   // START_URLS="https://a.com,https://b.com" (comma and/or newline separated, quoted in .env if on several lines), or fill the array here: replaces startUrl in `npm start`
   startUrls: (process.env.START_URLS || '').split(/[\s,]+/).filter(Boolean),
-  maxDepth: 3,
+  maxDepth: 2,
   maxStates: 500,
-  maxDurationSecs: 1800,
+  maxDurationSecs: 1800, // 30min
   concurrency: 1,
-  tabsPerSite: 15,
-  restoreDelayMs: 150,
+  tabsPerSite: 10,
+  restoreDelayMs: 200,
   viewport: { width: 1920, height: 1080 },
   stability: { quietMs: 500, timeoutMs: 10_000, longRequestMs: 3_000 },
   rectGridPx: 4,
@@ -117,7 +117,9 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   db: { path: 'storage/crawler.db', clearOnStart: true, clearClassifierCache: false },
   // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline
   analysis: {
-    maxConcurrentRequests: 3, timeBetweenRequestsMs: 500, reportsDir: 'reports',
+    maxConcurrentRequests: 3,
+    timeBetweenRequestsMs: 250,
+    reportsDir: 'reports',
     clientRoutingProbe: { minWaitMs: 3_000, idleMs: 300 },
   },
   // USER_DATA_DIR enables a persistent profile (~ and $HOME are expanded); when unset, a temporary profile is used

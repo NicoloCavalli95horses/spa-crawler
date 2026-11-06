@@ -1,9 +1,11 @@
 import type { Page } from 'playwright';
 import { log } from 'crawlee';
 import type { IActionExecutor } from '../core/interfaces';
+import type { IOverlayDismisser } from './OverlayDismisser';
 import type { Action } from '../core/types';
 import { evaluateInPage } from './evaluateInPage';
 import { locateTarget } from './inPage/locateTarget';
+import { hideBlockingOverlay } from './inPage/hideBlockingOverlay';
 
 export class ActionExecutor implements IActionExecutor {
   private guardedPages = new WeakSet<Page>();
@@ -12,6 +14,9 @@ export class ActionExecutor implements IActionExecutor {
     private allowedOrigin: string,   // blocks off-domain navigation
     private timeoutMs: number,
     private tolerancePx: number,     // allowed deviation between the saved and the current rectangle
+    // optional: shares StateCapturer's own OverlayDismisser (same instance, no separate state needed).
+    // Without one, a target newly covered by an unrelated interstitial just fails to locate, as before.
+    private dismisser?: IOverlayDismisser,
   ) {}
 
   /** Never throws: any problem becomes false and the engine moves on. */
@@ -25,11 +30,39 @@ export class ActionExecutor implements IActionExecutor {
     }
   }
 
+  /**
+   * Finds and clicks the target; on a miss, tries once to clear a blocking overlay first before
+   * giving up. A target that located fine when its state was captured can still fail to locate on a
+   * LATER restore (a fresh reload + replay of every action back to it) if some unrelated interstitial
+   * — e.g. a "welcome back" dialog that shows up non-deterministically on load, unrelated to anything
+   * the exploration itself did — now sits on top of it: `locateTarget`'s hit-test sees the dialog,
+   * not the real target, and reports it as unreachable, exactly as if it had actually disappeared.
+   * Confirmed live on busuu: a stray "welcome back" modal was seen mid-run; this is almost certainly
+   * why individual (state, element) pairs went permanently unexplored (DfsExplorer.visit marks an
+   * element explored BEFORE attempting it, so a single bad-luck miss here is never retried later) even
+   * though the exact same click/stability pipeline, run once in isolation, reaches the target cleanly.
+   * One retry is enough: OverlayDismisser.dismiss() already tries twice internally (Escape, then an
+   * explicit close control) before giving up, and the busuu case genuinely is a one-off dialog.
+   *
+   * If that still isn't enough — the blocker has no ARIA modal semantics at all, so Escape and the
+   * close-control search both find nothing to act on — hideBlockingOverlay is tried as a last resort:
+   * it reuses this very call's own failed hit-test to hide (display:none, never removed) exactly
+   * whatever is actually sitting on top of the target, no DOM-diffing/guessing involved. See that
+   * function's own doc comment for why it can never end up hiding the real target by mistake.
+   */
   private async click(page: Page, action: Action): Promise<boolean> {
     const t = action.target;
-    const point = await evaluateInPage(page, locateTarget, {
-      selector: t.selector, tag: t.tag, rect: t.rect, fixed: t.fixed, tolerancePx: this.tolerancePx,
-    });
+    const args = { selector: t.selector, tag: t.tag, rect: t.rect, fixed: t.fixed, tolerancePx: this.tolerancePx };
+    let point = await evaluateInPage(page, locateTarget, args);
+    if (!point && this.dismisser) {
+      if (await this.dismisser.dismiss(page)) {
+        point = await evaluateInPage(page, locateTarget, args);
+      }
+      if (!point) {
+        const { hidden } = await evaluateInPage(page, hideBlockingOverlay, { rect: t.rect, fixed: t.fixed });
+        if (hidden) point = await evaluateInPage(page, locateTarget, args);
+      }
+    }
     if (!point) return false;
     // click at coordinates: same semantics as the hit-test used during extraction
     await page.mouse.click(point.x, point.y);

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Page } from 'playwright';
 import { ActionExecutor } from '../src/browser/ActionExecutor';
+import { OverlayDismisser } from '../src/browser/OverlayDismisser';
 import { ClickableExtractor } from '../src/extraction/ClickableExtractor';
 import { SelectorBuilder } from '../src/extraction/SelectorBuilder';
 import type { Action, ElementDescriptor } from '../src/core/types';
@@ -10,6 +11,7 @@ import './helpers/fakes';
 
 const browser = useBrowser();
 const executor = () => new ActionExecutor(APP_ORIGIN, 3000, 4);
+const executorWithDismisser = () => new ActionExecutor(APP_ORIGIN, 3000, 4, new OverlayDismisser());
 const extractor = new ClickableExtractor(new SelectorBuilder({ gridPx: 4, includeText: true }), []);
 
 async function target(page: Page, text: string): Promise<ElementDescriptor> {
@@ -61,6 +63,54 @@ describe('ActionExecutor', () => {
     await page.evaluate(() => document.body.insertAdjacentHTML('beforeend',
       '<div style="position:fixed;inset:0;background:#0008"></div>'));
     assert.equal(await executor().execute(page, click(b)), false);
+    assert.deepEqual(await clicks(page), []);
+  });
+
+  // Regression: on busuu, a "welcome back" dialog was observed appearing non-deterministically mid
+  // run, covering a target that located fine when its state was originally captured. DfsExplorer
+  // marks an element explored BEFORE attempting it, so a single bad-luck miss like this is never
+  // retried later — the element is permanently skipped even though the exact same click/stability
+  // pipeline reaches it cleanly in isolation. With a dismisser, a covering modal is cleared and the
+  // click retried once before giving up, instead of failing outright.
+  it('dismisses a blocking modal that appeared since the target was captured, then retries the click', async () => {
+    const page = await browser.open({ '/': COUNTER });
+    const b = await target(page, 'B');
+    // a native <dialog>, opened via showModal() like a real "welcome back" interstitial would be:
+    // it actually responds to Escape (unlike a plain role=dialog div with no JS behind it), so this
+    // fixture exercises the real dismiss-then-retry path, not just "dismiss() was called".
+    await page.evaluate(() => document.body.insertAdjacentHTML('beforeend',
+      '<dialog style="position:fixed;inset:0;width:100%;height:100%;margin:0"><p>Welcome back</p></dialog>'));
+    await page.evaluate(() => (document.querySelector('dialog') as HTMLDialogElement).showModal());
+
+    assert.equal(await executorWithDismisser().execute(page, click(b)), true);
+    assert.deepEqual(await clicks(page), ['b']);
+  });
+
+  // Regression for the follow-up to the "welcome back" case: a blocker with no role=dialog/aria-modal
+  // at all (so OverlayDismisser's Escape + close-control search both find nothing to act on) still
+  // gets cleared, as a last resort, by hiding (display:none) whatever the failed hit-test found
+  // covering the target — the same information locateTarget's own miss already computed, no DOM
+  // diffing against an earlier snapshot needed.
+  it('hides a non-dialog overlay covering most of the viewport, then retries the click', async () => {
+    const page = await browser.open({ '/': COUNTER });
+    const b = await target(page, 'B');
+    await page.evaluate(() => document.body.insertAdjacentHTML('beforeend',
+      '<div id="shield" style="position:fixed;inset:0;background:#0008"></div>')); // no role=dialog
+    assert.equal(await executorWithDismisser().execute(page, click(b)), true);
+    assert.deepEqual(await clicks(page), ['b']);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('shield')!).display), 'none');
+  });
+
+  it('still returns false when what covers the target is too small to be an overlay (left alone)', async () => {
+    const page = await browser.open({ '/': COUNTER });
+    const b = await target(page, 'B');
+    // small floating element, not an overlay: covers B but far from half the viewport
+    await page.evaluate(() => {
+      const bRect = document.querySelectorAll('button')[1].getBoundingClientRect();
+      document.body.insertAdjacentHTML('beforeend',
+        `<div style="position:fixed;left:${bRect.x}px;top:${bRect.y}px;width:${bRect.width}px;height:${bRect.height}px;background:#0008"></div>`);
+    });
+    assert.equal(await executorWithDismisser().execute(page, click(b)), false);
     assert.deepEqual(await clicks(page), []);
   });
 
