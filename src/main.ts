@@ -12,6 +12,9 @@ import { ReactStateStore } from './db/ReactStateStore';
 import { PreindexedValueStore } from './db/PreindexedValueStore';
 import { VulnerabilityStore } from './db/VulnerabilityStore';
 import { AnalysisStatsStore } from './db/AnalysisStatsStore';
+import { AblationVulnerabilityStore } from './db/AblationVulnerabilityStore';
+import { AblationStatsStore } from './db/AblationStatsStore';
+import { ForgedRequestStore } from './db/ForgedRequestStore';
 import { CrawlStateStore } from './db/CrawlStateStore';
 import { CrawlEdgeStore } from './db/CrawlEdgeStore';
 import { AuthzClassificationStore } from './db/AuthzClassificationStore';
@@ -77,6 +80,13 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   const preindexStore = new PreindexedValueStore({ db, clearOnStart: cfg.db.clearOnStart });
   const vulnerabilityStore = new VulnerabilityStore({ db, clearOnStart: cfg.db.clearOnStart });
   const statsStore = new AnalysisStatsStore({ db, clearOnStart: cfg.db.clearOnStart });
+  // ablation study (config.analysis.ablationMode): own tables, always created (cheap), only ever
+  // written to when the flag is on — see AblationPipeline's own doc comment.
+  const ablationVulnerabilityStore = new AblationVulnerabilityStore({ db, clearOnStart: cfg.db.clearOnStart });
+  const ablationStatsStore = new AblationStatsStore({ db, clearOnStart: cfg.db.clearOnStart });
+  // shared between AnalysisPipeline and AblationPipeline so neither re-forges a request the other
+  // already made for the exact same (site, method, url, body) — see its own doc comment
+  const forgedRequestStore = new ForgedRequestStore({ db, clearOnStart: cfg.db.clearOnStart });
   // the exploration's own output (states/edges), replacing the old states.json/state-graph.json
   const crawlStates = new CrawlStateStore({ db, clearOnStart: cfg.db.clearOnStart });
   const crawlEdges = new CrawlEdgeStore({ db, clearOnStart: cfg.db.clearOnStart });
@@ -87,6 +97,7 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   const classifier = new AuthzClassifier(classificationStore);
   const deps: Omit<ObservabilityDeps, 'network'> = {
     reactState: reactStateStore, preindex: preindexStore, httpEventStore, vulnerabilityStore, statsStore,
+    ablationVulnerabilityStore, ablationStatsStore, forgedRequestStore,
     crawlStates, crawlEdges, classifier,
   };
   return new PlaywrightCrawler({

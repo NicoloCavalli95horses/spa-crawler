@@ -76,6 +76,13 @@ export interface CrawlConfig {
     // than a flaky one. Sized closer to those windows so a genuinely slow-but-real re-render is
     // still caught; still bounded so a route that truly ignores the segment doesn't stall analysis.
     clientRoutingProbe: { minWaitMs: number; idleMs: number };
+    // Ablation study: runs a second, independent analysis pass (AblationPipeline) alongside the
+    // main one, candidate-generating ONLY from the JSON bodies of already-captured HTTP responses
+    // -- no React state, no component siblings, no client-routing probes at all. Its findings land
+    // in their own tables (ablation_vulnerabilities/ablation_stats, never vulnerabilities/
+    // analysis_stats) so the two are always comparable, never mixed. Off by default: it doubles the
+    // forged-request traffic against the site under test for a comparison most runs don't need.
+    ablationMode: boolean;
   };
   lightweight: LightweightConfig;
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
@@ -121,6 +128,8 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
     timeBetweenRequestsMs: 250,
     reportsDir: 'reports',
     clientRoutingProbe: { minWaitMs: 3_000, idleMs: 300 },
+    // ABLATION_MODE=true npm start to turn it on from the shell instead of editing this file
+    ablationMode: process.env.ABLATION_MODE === 'true',
   },
   // USER_DATA_DIR enables a persistent profile (~ and $HOME are expanded); when unset, a temporary profile is used
   userDataDir: process.env.USER_DATA_DIR ? expandHome({ value: process.env.USER_DATA_DIR }) : undefined,

@@ -7,9 +7,10 @@ import type { ReactStateStore } from '../db/ReactStateStore';
 import type { CrawlStateStore } from '../db/CrawlStateStore';
 import type { VulnerabilityStore } from '../db/VulnerabilityStore';
 import type { AnalysisStatsStore } from '../db/AnalysisStatsStore';
+import type { ForgedRequestStore } from '../db/ForgedRequestStore';
 import { SegmentExtractor, spliceSegment, type SegmentCandidate } from './segments';
 import { findCandidates } from './matchFinder';
-import { forgeRequest, runWithConcurrency, sleep } from './requestForge';
+import { forgeRequestCached, runWithConcurrency, sleep } from './requestForge';
 import { getServerResponseSimilarity, compareObj, describeDiffs, type PropDiff } from './responseEvaluate';
 import { assessAuthZ, type AuthzClassifier } from './authzClassifier';
 import { checkClientSideRouting, checkClientSideRoutingForPath, type ClientRoutingResult } from './clientRouting';
@@ -32,6 +33,8 @@ export interface AnalysisPipelineDeps {
   crawlStateStore: CrawlStateStore;
   vulnerabilityStore: VulnerabilityStore;
   statsStore: AnalysisStatsStore;
+  // shared with AblationPipeline — see ForgedRequestStore's own doc comment
+  forgedRequestStore: ForgedRequestStore;
   classifier: AuthzClassifier;
   options: AnalysisPipelineOptions;
 }
@@ -225,9 +228,11 @@ export class AnalysisPipeline {
     candidate: ReturnType<typeof findCandidates>[number];
     segment: SegmentCandidate;
   }): Promise<void> {
-    const { vulnerabilityStore, classifier, options } = this.deps;
+    const { vulnerabilityStore, classifier, forgedRequestStore, options } = this.deps;
 
-    const forged = await forgeRequest({ page, url, method: event.method, headers: event.requestHeaders, postData: event.postData });
+    const forged = await forgeRequestCached({
+      cache: forgedRequestStore, site, page, url, method: event.method, headers: event.requestHeaders, postData: event.postData,
+    });
     await sleep(options.timeBetweenRequestsMs);
 
     const similarity = getServerResponseSimilarity(
@@ -461,7 +466,7 @@ function vulnerabilityId({ candidateValue, nodeId, method, url }: {
  * falls back to the raw string rather than throwing: a failed normalization should just miss this
  * optimization, not break the pipeline.
  */
-function normalizeUrl(raw: string): string {
+export function normalizeUrl(raw: string): string {
   try {
     const url = new URL(raw);
     const path = decodeURIComponent(url.pathname).replace(/\/+$/, '') || '/';

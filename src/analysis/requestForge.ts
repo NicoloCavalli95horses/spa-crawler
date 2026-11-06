@@ -1,4 +1,5 @@
 import type { Page } from 'playwright';
+import type { ForgedRequestStore } from '../db/ForgedRequestStore';
 
 export interface ResponseLike {
   status: number;
@@ -31,6 +32,25 @@ export async function forgeRequest({ page, url, method, headers, postData }: {
   const body = await res.text().catch(() => '');
   const responseHeaders = res.headers();
   return { status: res.status(), headers: responseHeaders, body, contentType: responseHeaders['content-type'] };
+}
+
+/**
+ * forgeRequest, but checking a shared ForgedRequestStore first: if either pipeline — AnalysisPipeline
+ * (React-informed) or AblationPipeline (HTTP-JSON-only) — already forged this exact (site, method,
+ * url, body) candidate, the other reuses that response instead of hitting the live site again. See
+ * ForgedRequestStore's own doc comment for why this matters specifically for the ablation study, and
+ * for why the body is part of the cache key too (two POSTs to the same URL with different bodies are
+ * different requests).
+ */
+export async function forgeRequestCached({ cache, site, page, url, method, headers, postData }: {
+  cache: ForgedRequestStore; site: string; page: Page; url: string; method: string;
+  headers?: Record<string, string>; postData?: string;
+}): Promise<ResponseLike> {
+  const cached = cache.get({ site, method, url, postData });
+  if (cached) return cached;
+  const response = await forgeRequest({ page, url, method, headers, postData });
+  cache.record({ site, method, url, postData, response });
+  return response;
 }
 
 /** Port of RAPIDOR's utils.js runWithConcurrency: bounded-concurrency task pool. */

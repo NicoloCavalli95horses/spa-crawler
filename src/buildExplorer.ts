@@ -19,11 +19,16 @@ import { ReactStateHooks } from './browser/ReactStateHooks';
 import type { HttpEventStore } from './db/HttpEventStore';
 import type { VulnerabilityStore } from './db/VulnerabilityStore';
 import type { AnalysisStatsStore } from './db/AnalysisStatsStore';
+import type { AblationVulnerabilityStore } from './db/AblationVulnerabilityStore';
+import type { AblationStatsStore } from './db/AblationStatsStore';
+import type { ForgedRequestStore } from './db/ForgedRequestStore';
 import type { CrawlStateStore } from './db/CrawlStateStore';
 import type { CrawlEdgeStore } from './db/CrawlEdgeStore';
 import type { AuthzClassifier } from './analysis/authzClassifier';
 import { AnalysisPipeline } from './analysis/AnalysisPipeline';
 import { AnalysisHooks } from './browser/AnalysisHooks';
+import { AblationPipeline } from './analysis/AblationPipeline';
+import { AblationHooks } from './browser/AblationHooks';
 import { CompositeHooks } from './core/CompositeHooks';
 import type { IExplorationHooks } from './core/interfaces';
 import { StateFingerprinter } from './state/StateFingerprinter';
@@ -44,6 +49,12 @@ export interface ObservabilityDeps {
   httpEventStore: HttpEventStore;
   vulnerabilityStore: VulnerabilityStore;
   statsStore: AnalysisStatsStore;
+  // ablation study (config.analysis.ablationMode): always constructed (cheap — just table creation),
+  // but AblationPipeline/AblationHooks are only wired up when the flag is on.
+  ablationVulnerabilityStore: AblationVulnerabilityStore;
+  ablationStatsStore: AblationStatsStore;
+  // shared between AnalysisPipeline and AblationPipeline — see its own doc comment
+  forgedRequestStore: ForgedRequestStore;
   crawlStates: CrawlStateStore;
   crawlEdges: CrawlEdgeStore;
   classifier: AuthzClassifier;
@@ -56,7 +67,10 @@ export interface ObservabilityDeps {
 export function buildExplorer(
   rootUrl: string, cfg: CrawlConfig, site: string, deps: ObservabilityDeps,
 ): DfsExplorer {
-  const { network, reactState, preindex, httpEventStore, vulnerabilityStore, statsStore, crawlStates, crawlEdges, classifier } = deps;
+  const {
+    network, reactState, preindex, httpEventStore, vulnerabilityStore, statsStore,
+    ablationVulnerabilityStore, ablationStatsStore, forgedRequestStore, crawlStates, crawlEdges, classifier,
+  } = deps;
   // 1. leaves: no dependencies on other modules
   const selectorBuilder = new SelectorBuilder({
     gridPx: cfg.rectGridPx, includeText: cfg.text.inElementId,
@@ -83,7 +97,8 @@ export function buildExplorer(
 
   // 3. the algorithm receives everything ready-made
   const analysisPipeline = new AnalysisPipeline({
-    httpEventStore, preindexStore: preindex, reactStateStore: reactState, crawlStateStore: crawlStates, vulnerabilityStore, statsStore, classifier,
+    httpEventStore, preindexStore: preindex, reactStateStore: reactState, crawlStateStore: crawlStates, vulnerabilityStore, statsStore,
+    forgedRequestStore, classifier,
     options: {
       maxConcurrentRequests: cfg.analysis.maxConcurrentRequests, timeBetweenRequestsMs: cfg.analysis.timeBetweenRequestsMs,
       dbPath: cfg.db.path, userDataDir: cfg.userDataDir, reportsDir: cfg.analysis.reportsDir,
@@ -91,11 +106,24 @@ export function buildExplorer(
     },
   });
 
+  // ablation study: candidate generation from HTTP JSON bodies only, no React state at all — see
+  // AblationPipeline's own doc comment. Off by default (config.analysis.ablationMode); when on,
+  // runs after AnalysisHooks (array order) so the two pipelines never forge requests concurrently
+  // through the same page/session, though neither mutates what the other reads.
+  const ablationPipeline = cfg.analysis.ablationMode
+    ? new AblationPipeline({
+        httpEventStore, crawlStateStore: crawlStates,
+        vulnerabilityStore: ablationVulnerabilityStore, statsStore: ablationStatsStore, forgedRequestStore, classifier,
+        options: { maxConcurrentRequests: cfg.analysis.maxConcurrentRequests, timeBetweenRequestsMs: cfg.analysis.timeBetweenRequestsMs },
+      })
+    : undefined;
+
   const maybeHooks: (IExplorationHooks | undefined)[] = [
     cfg.extension && new ExtensionCalls(cfg.extension, cfg.actionTimeoutMs),
     network && new NetworkObserverHooks(network),
     new ReactStateHooks(reactState, preindex),
     new AnalysisHooks(analysisPipeline, site),
+    ablationPipeline && new AblationHooks(ablationPipeline, site),
   ];
   const hooks = maybeHooks.filter((h): h is IExplorationHooks => Boolean(h));
 

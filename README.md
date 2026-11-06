@@ -113,10 +113,12 @@ Everything is in [src/config.ts](src/config.ts). The most important settings:
 | `screenshots` | `false` | Saves a PNG of each state. Useful only for visually inspecting results. |
 | `blocklist` | `logout, log out, sign out, quit, delete` | Substrings (case-insensitive) of text, `aria-label`, or `href` of elements that should never be clicked. |
 | `db.path` | `storage/crawler.db` | Shared SQLite file for the whole run — every table the crawler writes. |
-| `db.clearOnStart` | `true` | Wipes `crawl_states`/`crawl_edges`/`http_events`/`react_states`/`preindexed_values`/`vulnerabilities`/`analysis_stats` once at the start of the run. |
+| `db.clearOnStart` | `true` | Wipes `crawl_states`/`crawl_edges`/`http_events`/`react_states`/`preindexed_values`/`vulnerabilities`/`analysis_stats`/`ablation_vulnerabilities`/`ablation_stats`/`forged_requests` once at the start of the run. |
 | `db.clearClassifierCache` | `false` | Wipes `authz_classifications` too. Off by default: a classification is a pure function of the key string, independent of site or run, so it is worth keeping forever. |
-| `analysis.maxConcurrentRequests` / `analysis.timeBetweenRequestsMs` | `3` / `500` | Bound and pace forged requests. |
+| `analysis.maxConcurrentRequests` / `analysis.timeBetweenRequestsMs` | `3` / `250` | Bound and pace forged requests. |
 | `analysis.reportsDir` | `reports` | Where the reproduction script of each flagged finding is written (`<reportsDir>/<site>/<findingId>.repro.ts`, gitignored). |
+| `analysis.clientRoutingProbe` | `3000 / 300 ms` | How long the client-side-routing probe (`checkClientSideRouting`/`checkClientSideRoutingForPath`) waits for a DOM mutation after a synthetic `pushState`+`popstate`, sized to match the rest of the pipeline's own settle windows rather than the much shorter 500/100ms it used to hardcode. |
+| `analysis.ablationMode` | `false` (`$ABLATION_MODE`) | Runs the [ablation study](#ablation-study-http-json-only) alongside the main analysis. Off by default: it roughly doubles the forged-request traffic against the site under test. |
 
 ## Authentication (protected areas)
 
@@ -193,6 +195,24 @@ All three finding kinds go through the **same flow**: a real (non-headless) brow
 
 A failure while generating a script never prevents the finding itself from being recorded.
 
+### Ablation study (HTTP-JSON-only)
+
+`analysis.ablationMode` (default `false`, `ABLATION_MODE=true` to turn it on) runs a second, independent analysis pass — [src/analysis/AblationPipeline.ts](src/analysis/AblationPipeline.ts) — alongside the main one, to measure how much of what the React-informed pipeline finds actually required React state at all, versus how much was sitting in plain sight in the JSON the site's own API already returned. No new network monitoring and no new exploration: it reuses the exact same `http_events`/`crawl_states` the main pipeline already captured.
+
+* **Preindex** ([src/analysis/jsonMatchFinder.ts](src/analysis/jsonMatchFinder.ts), `buildJsonPreindex`) — every already-captured JSON response body for the site is walked once (same depth cap and "interesting key" rules as the React preindex — `isInteresting`/`tokenize` are reused verbatim), building a `value -> {body, path}[]` index. A URL segment is then looked up against the *whole* corpus, not just "its own" response: the id a request's own URL carries is often only ever *returned*, alongside its siblings, by a completely different endpoint (a list/listing call), not by the per-item endpoint whose own URL happens to contain it.
+* **Sibling finding** (`findJsonCandidates`) — once a match lands inside some body, siblings are looked for at *every* enclosing array level along that match's path (not just the nearest one), each level varied independently while every other index stays fixed at its reference value — the JSON analog of `matchFinder.ts`'s `componentIndex` walk. Sibling-finding itself never crosses bodies: two different HTTP responses are never assumed to describe related data just because a value happens to appear in both.
+* **Oracle** — identical to the main pipeline's HTTP path: forge the candidate request (`requestForge.ts`), compare the response (`responseEvaluate.ts`), diff the two sibling objects' properties (`compareObj`), classify the diff for authorization relevance (the same shared `authzClassifier.ts`, same cache).
+* **Shared forged-request cache** ([src/db/ForgedRequestStore.ts](src/db/ForgedRequestStore.ts)) — keyed by `(site, method, url, body)`: if the main pipeline already forged the exact same candidate (the two often propose the same id swap from two different sources), the ablation reuses that response instead of hitting the live site again, and vice versa.
+* **Structurally narrower by construction, not by omission** — there is no equivalent of the client-routing probes: those resolve their oracle from a DOM-mutation signal (did the app's own rendering react?), which has no network counterpart at all. A query param or path segment an SPA only ever reads client-side is invisible to a network-only analysis, full stop.
+
+Findings land in their own tables — `ablation_vulnerabilities`/`ablation_stats` — never mixed with `vulnerabilities`/`analysis_stats`, so the two are always comparable:
+
+```bash
+ABLATION_MODE=true START_URL=https://example.com npm start
+npm run compare-ablation                               # side-by-side stats + which findings the main pipeline caught that the ablation missed, by detectionMethod
+npm run compare-ablation -- --db storage/other-run.db
+```
+
 ### Test fixture: `react-app-target/`
 
 A small Next.js app with two deliberately planted IDORs, used to prove detection end-to-end rather than just unit-testing each module in isolation:
@@ -214,6 +234,7 @@ Everything the crawler produces lives in one SQLite file, `db.path` (default `st
 * `crawl_states` — one row per distinct UI state (id, URL, depth, click path, clickables, visible texts), keyed by `(site, id)`. The screenshot, when `screenshots` is enabled, is a BLOB column on the same row rather than a separate file.
 * `crawl_edges` — the click graph: one row per edge (`from`, `to`, action type/target/text/selector).
 * `http_events`, `react_states`, `preindexed_values`, `vulnerabilities`, `analysis_stats`, `authz_classifications` — everything from [IDOR analysis](#idor-analysis-authzidor-detection).
+* `ablation_vulnerabilities`, `ablation_stats` — the [ablation study](#ablation-study-http-json-only)'s own findings/stats, only ever written when `analysis.ablationMode` is on. `forged_requests` — the cache shared between the main pipeline and the ablation, so the same candidate is never forged twice.
 * `freemium_candidates` — the [Freemium prefilter](#freemium-prefilter) results. Unlike the tables above it is **never** wiped by `db.clearOnStart`: crawler runs do not touch it, and re-checking a domain only overwrites that domain's row.
 
 The only files written outside the database are the generated [reproduction scripts](#reproduction-scripts) under `analysis.reportsDir` (`reports/`).
@@ -226,6 +247,8 @@ Crawlee's own bookkeeping (request queue, key-value store) stays separate, under
 npm run stats                              # per-site crawl + IDOR stats, cross-site averages, flagged vulnerabilities
 npm run stats -- --db storage/other-run.db # or any other SQLite file in that shape
 ```
+
+`npm run compare-ablation` (same `--db` flag) compares these against the [ablation study](#ablation-study-http-json-only)'s own tables, when `analysis.ablationMode` was on for that run.
 
 ## Freemium study
 

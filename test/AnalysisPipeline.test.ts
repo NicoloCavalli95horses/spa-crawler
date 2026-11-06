@@ -11,6 +11,7 @@ import { ReactStateStore, type RapidorGraph } from '../src/db/ReactStateStore';
 import { CrawlStateStore } from '../src/db/CrawlStateStore';
 import { VulnerabilityStore } from '../src/db/VulnerabilityStore';
 import { AnalysisStatsStore } from '../src/db/AnalysisStatsStore';
+import { ForgedRequestStore } from '../src/db/ForgedRequestStore';
 import { AuthzClassifier } from '../src/analysis/authzClassifier';
 import { AuthzClassificationStore } from '../src/db/AuthzClassificationStore';
 import { installParamUsageTracking } from '../src/browser/paramUsageTracker';
@@ -44,9 +45,10 @@ describe('AnalysisPipeline: client-side-only query params', () => {
     const crawlStateStore = new CrawlStateStore({ db, clearOnStart: true });
     const vulnerabilityStore = new VulnerabilityStore({ db, clearOnStart: true });
     const statsStore = new AnalysisStatsStore({ db, clearOnStart: true });
+    const forgedRequestStore = new ForgedRequestStore({ db, clearOnStart: true });
     const classifier = new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: true }));
     const pipeline = new AnalysisPipeline({
-      httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, classifier,
+      httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, forgedRequestStore, classifier,
       options: {
         maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports'),
         // test pages react near-instantly: a short window keeps the suite fast without masking a real miss
@@ -129,9 +131,10 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
     const crawlStateStore = new CrawlStateStore({ db, clearOnStart: true });
     const vulnerabilityStore = new VulnerabilityStore({ db, clearOnStart: true });
     const statsStore = new AnalysisStatsStore({ db, clearOnStart: true });
+    const forgedRequestStore = new ForgedRequestStore({ db, clearOnStart: true });
     const classifier = new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: true }));
     const pipeline = new AnalysisPipeline({
-      httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, classifier,
+      httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, forgedRequestStore, classifier,
       options: {
         maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports'),
         clientRoutingProbe: { minWaitMs: 300, idleMs: 50 },
