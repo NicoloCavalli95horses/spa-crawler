@@ -94,14 +94,26 @@ function isPlainObject(value: unknown): boolean {
   return proto === Object.prototype || proto === null;
 }
 
-/** Port of responseEvaluator.js's compareObj: deep diff, treating non-plain-objects (incl. arrays) as leaves. */
+/**
+ * Deviation from RAPIDOR's own responseEvaluator.js, deliberate: the original treats arrays as opaque
+ * leaves (the whole array becomes a single diff entry whenever anything inside it differs, so a
+ * sensitive field buried inside an array element is never surfaced to the authz classifier on its
+ * own). Recursing into arrays index-wise closes that gap for both the React-informed pipeline and the
+ * JSON-only ablation — exactly the point of the ablation study: give the HTTP-only analysis every
+ * tool the React-informed one has, so a difference in results reflects a real difference in signal
+ * (React state vs. JSON alone), not an avoidable blind spot in the shared oracle. Index-wise means
+ * position N on one side is compared against position N on the other: for two JSON responses
+ * describing "the same kind of object, parameterized differently" (the only case this pipeline ever
+ * diffs), array order is stable across requests, so this is the right alignment — it is not a
+ * general-purpose array diff (no reordering/LCS detection).
+ */
 export function compareObj(a: unknown, b: unknown): PropDiff[] {
   const visited = new WeakSet<object>();
   const diffs: PropDiff[] = [];
 
   function compare(x: unknown, y: unknown, path: (string | number)[] = []): void {
     if (x === y) return;
-    if (typeof x !== typeof y || !isPlainObject(x) || !isPlainObject(y)) {
+    if (typeof x !== typeof y || Array.isArray(x) !== Array.isArray(y) || (!Array.isArray(x) && !isPlainObject(x)) || (!Array.isArray(y) && !isPlainObject(y))) {
       const key = path.length ? path[path.length - 1] : '';
       diffs.push({ path, reference: x, current: y, key, pathStr: path.join('.') });
       return;
@@ -109,6 +121,14 @@ export function compareObj(a: unknown, b: unknown): PropDiff[] {
     if (visited.has(x as object) || visited.has(y as object)) return;
     visited.add(x as object);
     visited.add(y as object);
+
+    if (Array.isArray(x) && Array.isArray(y)) {
+      const length = Math.max(x.length, y.length);
+      for (let i = 0; i < length; i++) {
+        compare(x[i], y[i], [...path, i]);
+      }
+      return;
+    }
 
     const keys = new Set([...Object.keys(x as object), ...Object.keys(y as object)]);
     for (const key of keys) {
