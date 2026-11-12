@@ -4,7 +4,11 @@ import type { Action, ElementDescriptor, Snapshot, UIState } from './types.js';
 export interface IClickableExtractor { extract(page: Page): Promise<ElementDescriptor[]> }
 export interface IPageTextExtractor { extract(page: Page): Promise<string[]> }
 export interface IStabilityWaiter { waitForStable(page: Page): Promise<void> }
-export interface IActionExecutor { execute(page: Page, a: Action): Promise<boolean> }
+export interface IActionExecutor {
+  execute(page: Page, a: Action): Promise<boolean>;
+  /** True if the target can be located on the current page (same overlay handling as a click, but no click). */
+  locate(page: Page, a: Action): Promise<boolean>;
+}
 
 export interface FingerprintInput { url: string; clickables: ElementDescriptor[]; texts: string[] }
 /** Pure function: same data, same hash. No browser access. */
@@ -13,7 +17,7 @@ export interface IStateFingerprinter { fingerprint(input: FingerprintInput): str
 /** Extracts clickables and texts and computes the id: the only way the engine "looks" at the page. */
 export interface IStateCapturer { capture(page: Page): Promise<Snapshot> }
 
-export interface IStateNavigator { restore(page: Page, s: UIState): Promise<boolean> }
+export interface IStateNavigator { restore(page: Page, s: UIState, el: ElementDescriptor): Promise<boolean> }
 
 export interface IStateStore {
   has(id: string): boolean;

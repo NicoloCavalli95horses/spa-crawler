@@ -57,6 +57,9 @@ export class FakeApp {
         this.current = next;
         return true;
       },
+      // the element is "present" when it is one of the current state's clickables
+      locate: async (_page: Page, action: Action) =>
+        action.target.id in (this.transitions[this.current] ?? {}),
     };
   }
 }
@@ -93,6 +96,8 @@ export class FakeTabs {
         await new Promise((resolve) => setTimeout(resolve, 2));
         return this.byPage.get(page)!.executor().execute(page, action);
       },
+      locate: async (page: Page, action: Action) =>
+        this.byPage.get(page)!.executor().locate(page, action),
     };
   }
 }

@@ -127,7 +127,7 @@ export class DfsExplorer {
   /** Restores the state, clicks the element, captures the result. Returns the state if it is new. */
   private async step(w: Worker, state: UIState, el: ElementDescriptor): Promise<UIState | null> {
     const { page } = w;
-    if (!(await this.navigator.restore(page, state))) {
+    if (!(await this.navigator.restore(page, state, el))) {
       log.debug(`State ${state.id} cannot be restored, skipping "${el.text ?? el.selector}"`);
       return null;
     }

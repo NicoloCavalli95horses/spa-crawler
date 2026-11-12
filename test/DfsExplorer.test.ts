@@ -29,7 +29,7 @@ function run(app: FakeApp, limits: Partial<ExplorationLimits> = {}, capturer?: I
   const { crawlStates, crawlEdges } = newPersistence();
   const cap = capturer ?? app.capturer();
   const executor = app.executor();
-  const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
+  const navigator = new StateNavigator('https://app.test/', executor, noWait, undefined, { timeoutMs: 0 });
   const store = new StateStore({ screenshots: false }, SITE, crawlStates);
   const graph = new StateGraph(SITE, crawlEdges);
   const explorer = new DfsExplorer(noWait, executor, cap, navigator, store, graph,
@@ -118,7 +118,7 @@ describe('DfsExplorer', () => {
     const { crawlStates, crawlEdges } = newPersistence();
     const cap = app.capturer();
     const executor = app.executor();
-    const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
+    const navigator = new StateNavigator('https://app.test/', executor, noWait, undefined, { timeoutMs: 0 });
     const order: string[] = [];
     const hooks = {
       onStart: async () => {},
@@ -152,7 +152,7 @@ describe('DfsExplorer', () => {
       const { crawlStates, crawlEdges } = newPersistence();
       const cap = tabs.capturer();
       const executor = tabs.executor();
-      const navigator = new StateNavigator('https://app.test/', executor, noWait, cap);
+      const navigator = new StateNavigator('https://app.test/', executor, noWait, undefined, { timeoutMs: 0 });
       const explorer = new DfsExplorer(noWait, executor, cap, navigator,
         new StateStore({ screenshots: false }, SITE, crawlStates), new StateGraph(SITE, crawlEdges),
         { maxDepth: 10, maxStates: 1000, maxDurationSecs: 3600, ...limits });

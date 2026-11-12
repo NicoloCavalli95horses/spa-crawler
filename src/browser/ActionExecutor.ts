@@ -31,6 +31,22 @@ export class ActionExecutor implements IActionExecutor {
   }
 
   /**
+   * Whether the target is reachable right now, without clicking it. Used by StateNavigator to
+   * confirm a tolerant restore (same route + the element to click is present). Uses the exact same
+   * locate-and-clear-overlay pipeline as a real click, so "locate says yes" and "the click will find
+   * it" stay in lock-step. Never throws: any problem becomes false.
+   */
+  async locate(page: Page, action: Action): Promise<boolean> {
+    try {
+      await this.installGuards(page);
+      return await withTimeout(this.locatePoint(page, action).then((p) => p !== null), this.timeoutMs);
+    } catch (err) {
+      log.debug(`Locating "${action.target.text ?? action.target.selector}" failed: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
    * Finds and clicks the target; on a miss, tries once to clear a blocking overlay first before
    * giving up. A target that located fine when its state was captured can still fail to locate on a
    * LATER restore (a fresh reload + replay of every action back to it) if some unrelated interstitial
@@ -51,6 +67,20 @@ export class ActionExecutor implements IActionExecutor {
    * function's own doc comment for why it can never end up hiding the real target by mistake.
    */
   private async click(page: Page, action: Action): Promise<boolean> {
+    const point = await this.locatePoint(page, action);
+    if (!point) return false;
+    // click at coordinates: same semantics as the hit-test used during extraction
+    await page.mouse.click(point.x, point.y);
+    return true;
+  }
+
+  /**
+   * Finds the target and returns where to click it, clearing a blocking overlay first if a direct
+   * hit-test misses (see this class's locate/click doc comments). Returns null if, even after that,
+   * nothing of the target is reachable. Shared by `click` (which then clicks the point) and `locate`
+   * (which only cares whether a point exists).
+   */
+  private async locatePoint(page: Page, action: Action): Promise<{ x: number; y: number } | null> {
     const t = action.target;
     const args = { selector: t.selector, tag: t.tag, rect: t.rect, fixed: t.fixed, tolerancePx: this.tolerancePx };
     let point = await evaluateInPage(page, locateTarget, args);
@@ -63,10 +93,7 @@ export class ActionExecutor implements IActionExecutor {
         if (hidden) point = await evaluateInPage(page, locateTarget, args);
       }
     }
-    if (!point) return false;
-    // click at coordinates: same semantics as the hit-test used during extraction
-    await page.mouse.click(point.x, point.y);
-    return true;
+    return point;
   }
 
   /** Installed once per page. */

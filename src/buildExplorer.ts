@@ -93,7 +93,7 @@ export function buildExplorer(
   const dismisser = cfg.dismissOverlays ? new OverlayDismisser() : undefined;
   const capturer = new StateCapturer(extractor, textExtractor, fingerprinter, dismisser);
   const executor = new ActionExecutor(new URL(rootUrl).origin, cfg.actionTimeoutMs, cfg.rectGridPx, dismisser);
-  const navigator = new StateNavigator(rootUrl, executor, waiter, capturer, new RequestThrottle(cfg.restoreDelayMs));
+  const navigator = new StateNavigator(rootUrl, executor, waiter, new RequestThrottle(cfg.restoreDelayMs));
 
   // 3. the algorithm receives everything ready-made
   const analysisPipeline = new AnalysisPipeline({
