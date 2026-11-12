@@ -8,7 +8,7 @@ import { HttpEventStore } from '../src/db/HttpEventStore';
 import { CrawlStateStore } from '../src/db/CrawlStateStore';
 import { VulnerabilityStore } from '../src/db/VulnerabilityStore';
 import { AnalysisStatsStore } from '../src/db/AnalysisStatsStore';
-import { SegmentExtractor } from '../src/analysis/segments';
+import { extractSegments } from '../src/analysis/segments';
 import { findCandidates } from '../src/analysis/matchFinder';
 
 const DB_PATH = 'storage/crawler.db';
@@ -65,11 +65,10 @@ const withObjective = events.filter((e) => e.url.includes('objective_'));
 console.log(`containing "objective_": ${withObjective.length}`);
 for (const e of withObjective.slice(0, 20)) console.log(`  ${e.method} ${e.url}`);
 
-console.log(`\n=== SegmentExtractor on the target URL: what segments/candidates would be proposed today ===`);
-const extractor = new SegmentExtractor();
+console.log(`\n=== extractSegments on the target URL: what segments/candidates would be proposed today ===`);
 const targetPageUrl = crawled.find((u) => u.includes(TARGET_UUID));
 if (targetPageUrl) {
-  for (const seg of extractor.extract(targetPageUrl)) {
+  for (const seg of extractSegments({ url: targetPageUrl })) {
     console.log(`  segment index=${seg.index} value=${seg.value} paramName=${seg.paramName ?? '(path)'}`);
   }
 } else {

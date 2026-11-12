@@ -68,4 +68,16 @@ describe('HttpEventStore', () => {
     new HttpEventStore({ db, clearOnStart: true });
     assert.equal(rowsOf(db).length, 0);
   });
+
+  it('clearSite removes only the given domain, keeping other sites intact', () => {
+    const db = newDb('e.db');
+    const store = new HttpEventStore({ db, clearOnStart: false });
+    store.record({ site: 'a.test', request: request() });
+    store.record({ site: 'b.test', request: request() });
+
+    store.clearSite({ site: 'a.test' });
+
+    assert.equal(store.count('a.test'), 0);
+    assert.equal(store.count('b.test'), 1);
+  });
 });

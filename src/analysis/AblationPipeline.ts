@@ -6,7 +6,7 @@ import type { CrawlStateStore } from '../db/CrawlStateStore';
 import type { AblationVulnerabilityStore } from '../db/AblationVulnerabilityStore';
 import type { AblationStatsStore } from '../db/AblationStatsStore';
 import type { ForgedRequestStore } from '../db/ForgedRequestStore';
-import { SegmentExtractor, spliceSegment } from './segments';
+import { extractSegments, spliceSegment } from './segments';
 import { buildJsonPreindex, findJsonCandidates, type JsonCandidate } from './jsonMatchFinder';
 import { forgeRequestCached, runWithConcurrency, sleep } from './requestForge';
 import { getServerResponseSimilarity, compareObj, describeDiffs } from './responseEvaluate';
@@ -68,7 +68,6 @@ export class AblationPipeline {
   async runForSite({ page, site }: { page: Page; site: string }): Promise<void> {
     const analysisStartedAt = Date.now();
     const { httpEventStore, crawlStateStore, vulnerabilityStore, statsStore, options } = this.deps;
-    const extractor = new SegmentExtractor();
     // Scoped to THIS site only: listBySite already filters by site, and both `bodies`/`preindex`
     // below are built fresh from exactly this array on every call — never cached across sites, so a
     // JSON body captured for a different site can never leak into this one's index.
@@ -98,7 +97,7 @@ export class AblationPipeline {
     // baseline response to compare the forged candidate against) — NOT necessarily the body the
     // match/siblings were found in: that's `bodies[hit.bodyIndex]`, resolved independently per hit.
     for (const event of events) {
-      for (const segment of extractor.extract(event.url)) {
+      for (const segment of extractSegments({ url: event.url })) {
         segmentsExtracted++;
         const hits = preindex.get(segment.value) ?? [];
         jsonMatchesFound += hits.length;

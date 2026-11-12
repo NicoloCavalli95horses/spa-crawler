@@ -37,6 +37,16 @@ export class PreindexedValueStore {
     if (clearOnStart) this.db.exec('DELETE FROM preindexed_values');
   }
 
+  /**
+   * Removes every row belonging to one site. preindexed_values has no `site` column of its own: each
+   * row points at a react_states row via state_id, so a site's rows are those whose state_id belongs
+   * to that site. Must run BEFORE the react_states rows themselves are deleted, or the subquery finds
+   * nothing.
+   */
+  clearSite({ site }: { site: string }): void {
+    this.db.prepare('DELETE FROM preindexed_values WHERE state_id IN (SELECT id FROM react_states WHERE site = ?)').run(site);
+  }
+
   /** Replaces this state's rows with a fresh preindex of its graph (cheap: one state at a time). */
   reindex({ stateId, graph }: { stateId: number; graph: RapidorGraph }): void {
     const nodes = graph.nodes ?? {};

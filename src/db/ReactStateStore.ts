@@ -39,6 +39,11 @@ export class ReactStateStore {
     if (clearOnStart) this.db.exec('DELETE FROM react_states');
   }
 
+  /** Removes every row for one site: used to overwrite a single domain's previous run without touching the others. */
+  clearSite({ site }: { site: string }): void {
+    this.db.prepare('DELETE FROM react_states WHERE site = ?').run(site);
+  }
+
   /**
    * No-ops (returns undefined) when `graph` has no fingerprint: nothing usable to dedupe/store
    * (extension absent or not yet settled). Otherwise returns the row's id, via RETURNING, so a

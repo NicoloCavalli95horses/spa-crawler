@@ -95,6 +95,23 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   const classificationStore = new AuthzClassificationStore({ db, clearOnStart: cfg.db.clearClassifierCache });
   // shared across every site in this run: the embedding model loads once and its in-memory L1 cache carries over
   const classifier = new AuthzClassifier(classificationStore);
+  // When overwriteExistingDomain is on, a re-run replaces only the explored domain's own rows and
+  // keeps every other saved run. Called once per site from the pre-navigation hook below (not the
+  // request handler), so it runs before the NetworkObserver records this run's own http_events for
+  // the site. preindex is cleared before react_states because its rows are resolved through them.
+  const overwriteDomainRows = ({ site }: { site: string }): void => {
+    if (!cfg.db.overwriteExistingDomain) return;
+    preindexStore.clearSite({ site });
+    reactStateStore.clearSite({ site });
+    httpEventStore.clearSite({ site });
+    vulnerabilityStore.clearSite({ site });
+    statsStore.clearSite({ site });
+    ablationVulnerabilityStore.clearSite({ site });
+    ablationStatsStore.clearSite({ site });
+    forgedRequestStore.clearSite({ site });
+    crawlStates.clearSite({ site });
+    crawlEdges.clearSite({ site });
+  };
   const deps: Omit<ObservabilityDeps, 'network'> = {
     reactState: reactStateStore, preindex: preindexStore, httpEventStore, vulnerabilityStore, statsStore,
     ablationVulnerabilityStore, ablationStatsStore, forgedRequestStore,
@@ -122,6 +139,8 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
     },
     preNavigationHooks: [
       async ({ page, request }) => {
+        // before the first navigation, so this run's own captures are not wiped along with the old ones
+        overwriteDomainRows({ site: new URL(request.url).hostname });
         await page.setViewportSize(cfg.viewport);
         await installParamUsageTracking(page);
         const assetCache = makeAssetCache();

@@ -27,6 +27,11 @@ export class CrawlEdgeStore {
     if (clearOnStart) this.db.exec('DELETE FROM crawl_edges');
   }
 
+  /** Removes every row for one site: used to overwrite a single domain's previous run without touching the others. */
+  clearSite({ site }: { site: string }): void {
+    this.db.prepare('DELETE FROM crawl_edges WHERE site = ?').run(site);
+  }
+
   /** Appends edges in one transaction: StateGraph only ever passes the ones not yet persisted. */
   recordMany({ site, edges }: { site: string; edges: Edge[] }): void {
     if (edges.length === 0) return;

@@ -47,6 +47,11 @@ export class AnalysisStatsStore {
     if (clearOnStart) this.db.exec('DELETE FROM analysis_stats');
   }
 
+  /** Removes every row for one site: used to overwrite a single domain's previous run without touching the others. */
+  clearSite({ site }: { site: string }): void {
+    this.db.prepare('DELETE FROM analysis_stats WHERE site = ?').run(site);
+  }
+
   record(row: AnalysisStatsRow): void {
     this.db.prepare(`
       INSERT INTO analysis_stats (

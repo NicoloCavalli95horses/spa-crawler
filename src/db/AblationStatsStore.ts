@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 export interface AblationStatsRow {
   site: string;
   httpEvents: number;          // same http_events count the main pipeline saw for this site
-  segmentsExtracted: number;   // URL path/query segments proposed as swap candidates (same SegmentExtractor)
+  segmentsExtracted: number;   // URL path/query segments proposed as swap candidates (same extractSegments)
   jsonMatchesFound: number;    // leaf values inside a response body matching a segment's value (findJsonMatches)
   candidatesFound: number;     // sibling array-items proposed from those matches (findJsonCandidates)
   requestsGenerated: number;   // forged requests actually dispatched
@@ -44,6 +44,11 @@ export class AblationStatsStore {
       )
     `);
     if (clearOnStart) this.db.exec('DELETE FROM ablation_stats');
+  }
+
+  /** Removes every row for one site: used to overwrite a single domain's previous run without touching the others. */
+  clearSite({ site }: { site: string }): void {
+    this.db.prepare('DELETE FROM ablation_stats WHERE site = ?').run(site);
   }
 
   record(row: AblationStatsRow): void {

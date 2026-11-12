@@ -42,6 +42,11 @@ export class ForgedRequestStore {
     if (clearOnStart) this.db.exec('DELETE FROM forged_requests');
   }
 
+  /** Removes every row for one site: used to overwrite a single domain's previous run without touching the others. */
+  clearSite({ site }: { site: string }): void {
+    this.db.prepare('DELETE FROM forged_requests WHERE site = ?').run(site);
+  }
+
   get({ site, method, url, postData }: { site: string; method: string; url: string; postData?: string }): ResponseLike | undefined {
     const row = this.db.prepare(
       'SELECT status, headers, body, content_type AS contentType FROM forged_requests WHERE site = ? AND method = ? AND url = ? AND post_data = ?',

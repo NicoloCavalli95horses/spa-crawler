@@ -60,7 +60,8 @@ export interface CrawlConfig {
   dismissOverlays: boolean;     // close blocking modals (Escape / close control) before capturing, so an interstitial does not cost a depth level
   db: {
     path: string;                    // SQLite file, shared across the whole run (every site, every tab)
-    clearOnStart: boolean;           // wipe http_events/react_states/preindexed_values/vulnerabilities/analysis_stats once at the start of each crawler run; true for debugging
+    clearOnStart: boolean;           // wipe http_events/react_states/preindexed_values/vulnerabilities/analysis_stats (every site's rows) once at the start of each crawler run; false by default — use overwriteExistingDomain to only overwrite the domain(s) being explored
+    overwriteExistingDomain: boolean; // before exploring a domain, delete only THAT domain's rows from every per-site table, so a re-run overwrites its own previous results while other saved runs are kept; true by default
     clearClassifierCache: boolean;   // wipe authz_classifications too; false by default: classifications are a pure function of the key string, independent of site/run, so they're worth keeping forever
   };
   analysis: {
@@ -121,7 +122,13 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   // close blocking modals (Escape, then an explicit close control) before capturing a state
   dismissOverlays: true,
   // single SQLite file every store
-  db: { path: 'storage/crawler.db', clearOnStart: true, clearClassifierCache: false },
+  // DB_CLEAR_ON_START=true wipes every site's rows; by default only the explored domain is overwritten
+  db: {
+    path: 'storage/crawler.db',
+    clearOnStart: process.env.DB_CLEAR_ON_START === 'true',
+    overwriteExistingDomain: process.env.OVERWRITE_EXISTING_DOMAIN !== 'false',
+    clearClassifierCache: false,
+  },
   // server-side IDOR analysis (preindex/match/forge/evaluate), ported from RAPIDOR's full-mode pipeline
   analysis: {
     maxConcurrentRequests: 3,

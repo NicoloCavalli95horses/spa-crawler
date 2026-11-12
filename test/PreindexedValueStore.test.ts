@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { PreindexedValueStore } from '../src/db/PreindexedValueStore';
-import type { RapidorGraph } from '../src/db/ReactStateStore';
+import { ReactStateStore, type RapidorGraph } from '../src/db/ReactStateStore';
 
 let root: string;
 before(async () => { root = await mkdtemp(join(tmpdir(), 'crawler-test-')); });
@@ -59,5 +59,20 @@ describe('PreindexedValueStore', () => {
     assert.equal(new PreindexedValueStore({ db, clearOnStart: false }).count(), 3);
 
     assert.equal(new PreindexedValueStore({ db, clearOnStart: true }).count(), 0);
+  });
+
+  it('clearSite removes only the rows whose state belongs to that domain', () => {
+    const db = new Database(join(root, 'e.db'));
+    const states = new ReactStateStore({ db, clearOnStart: false });
+    const preindex = new PreindexedValueStore({ db, clearOnStart: false });
+
+    const stateA = states.record({ site: 'a.test', url: 'https://a.test/x', graph })!;
+    const stateB = states.record({ site: 'b.test', url: 'https://b.test/x', graph })!;
+    preindex.reindex({ stateId: stateA, graph });
+    preindex.reindex({ stateId: stateB, graph });
+
+    preindex.clearSite({ site: 'a.test' });
+
+    assert.deepEqual(preindex.findByValue('free-id').map((m) => m.stateId), [stateB]);
   });
 });

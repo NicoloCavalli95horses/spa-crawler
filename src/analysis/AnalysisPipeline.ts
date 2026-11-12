@@ -8,7 +8,7 @@ import type { CrawlStateStore } from '../db/CrawlStateStore';
 import type { VulnerabilityStore } from '../db/VulnerabilityStore';
 import type { AnalysisStatsStore } from '../db/AnalysisStatsStore';
 import type { ForgedRequestStore } from '../db/ForgedRequestStore';
-import { SegmentExtractor, spliceSegment, type SegmentCandidate } from './segments';
+import { extractSegments, spliceSegment, type SegmentCandidate } from './segments';
 import { findCandidates } from './matchFinder';
 import { forgeRequestCached, runWithConcurrency, sleep } from './requestForge';
 import { getServerResponseSimilarity, compareObj, describeDiffs, type PropDiff } from './responseEvaluate';
@@ -81,7 +81,6 @@ export class AnalysisPipeline {
   async runForSite({ page, site, explorationMs }: { page: Page; site: string; explorationMs: number }): Promise<void> {
     const analysisStartedAt = Date.now();
     const { httpEventStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, options } = this.deps;
-    const extractor = new SegmentExtractor();
     const events = httpEventStore.listBySite(site);
     const pageUrls = reactStateStore.listUrlsBySite(site);
     const crawledStates = crawlStateStore.listBySite(site);
@@ -105,7 +104,7 @@ export class AnalysisPipeline {
     let candidatesFound = 0;
 
     for (const event of events) {
-      const found = this.findUrlCandidates({ extractor, url: event.url });
+      const found = this.findUrlCandidates({ url: event.url });
       segmentsExtracted += found.segments;
       matchesFound += found.matches;
       for (const { segment, candidate } of found.items) {
@@ -120,7 +119,7 @@ export class AnalysisPipeline {
     }
 
     for (const pageUrl of pageUrls) {
-      const found = this.findUrlCandidates({ extractor, url: pageUrl });
+      const found = this.findUrlCandidates({ url: pageUrl });
       segmentsExtracted += found.segments;
       matchesFound += found.matches;
       for (const { segment, candidate } of found.items) {
@@ -171,7 +170,7 @@ export class AnalysisPipeline {
   }
 
   /** Runs the preindex -> matchFinder steps for one URL (an http_event's or a crawled page's). */
-  private findUrlCandidates({ extractor, url }: { extractor: SegmentExtractor; url: string }): {
+  private findUrlCandidates({ url }: { url: string }): {
     segments: number;
     matches: number;
     items: { segment: SegmentCandidate; candidate: ReturnType<typeof findCandidates>[number] }[];
@@ -181,7 +180,7 @@ export class AnalysisPipeline {
     let matches = 0;
     const items: { segment: SegmentCandidate; candidate: ReturnType<typeof findCandidates>[number] }[] = [];
 
-    for (const segment of extractor.extract(url)) {
+    for (const segment of extractSegments({ url })) {
       segments++;
       for (const match of preindexStore.findByValue(segment.value)) {
         matches++;
@@ -284,7 +283,7 @@ export class AnalysisPipeline {
       responseSimilarity: similarity, authzDiff: authz,
     });
     if (inserted) {
-      log.warning(`AnalysisPipeline: potential access control issue (${detectionMethod}) — ${event.method} ${event.url} -> ${url}`);
+      log.warning(`AnalysisPipeline: potential access control issue (${detectionMethod}) — extracted ${describeExtractedSegment({ segment, candidate })} | ${event.method} ${event.url} -> ${url}`);
       this.writeReproduction({
         id, site, motivation: describeDiffs(differences), differences: authz.differences, sensitiveKeys: authz.sensitiveKeys,
         candidate,
@@ -336,7 +335,7 @@ export class AnalysisPipeline {
       responseSimilarity: null, authzDiff: authz,
     });
     if (inserted) {
-      log.warning(`AnalysisPipeline: potential access control issue (client-routing) — ${pageUrl} -> ${candidateUrl}`);
+      log.warning(`AnalysisPipeline: potential access control issue (client-routing) — extracted query param "${paramName}": ${String(candidate.referenceValue)} -> ${candidate.candidateValue} | ${pageUrl} -> ${candidateUrl}`);
       this.writeReproduction({
         id, site, referenceUrl: pageUrl, candidateUrl, motivation: describeDiffs(differences),
         differences: authz.differences, sensitiveKeys: authz.sensitiveKeys, candidate,
@@ -387,7 +386,7 @@ export class AnalysisPipeline {
       responseSimilarity: null, authzDiff: authz,
     });
     if (inserted) {
-      log.warning(`AnalysisPipeline: potential access control issue (client-routing path) — ${pageUrl} -> ${candidateUrl}`);
+      log.warning(`AnalysisPipeline: potential access control issue (client-routing path) — extracted path segment: ${String(candidate.referenceValue)} -> ${candidate.candidateValue} | ${pageUrl} -> ${candidateUrl}`);
       this.writeReproduction({
         id, site, referenceUrl: pageUrl, candidateUrl, motivation: describeDiffs(differences),
         differences: authz.differences, sensitiveKeys: authz.sensitiveKeys, candidate,
@@ -486,6 +485,20 @@ export function normalizeUrl(raw: string): string {
  * guard. Without this distinction a rejected-by-redirect candidate logs identically to one the app
  * genuinely ignored, hiding exactly the case worth double-checking by hand.
  */
+/**
+ * Human-readable description of which extracted segment produced a finding and how it was mutated:
+ * the segment's location (a named query param, or a path segment) plus the original value swapped
+ * for the sibling candidate value. Makes the warning say *why* two URLs are being compared, instead
+ * of leaving the reader to diff the two URLs by eye to spot the one part that changed.
+ */
+function describeExtractedSegment({ segment, candidate }: {
+  segment: SegmentCandidate;
+  candidate: ReturnType<typeof findCandidates>[number];
+}): string {
+  const location = segment.paramName ? `query param "${segment.paramName}"` : 'path segment';
+  return `${location}: ${String(candidate.referenceValue)} -> ${candidate.candidateValue}`;
+}
+
 function describeClientRoutingRejection(result: ClientRoutingResult): string {
   return result.hasMutatedDom
     ? `DOM mutated but the app redirected away to ${result.finalUrl}`

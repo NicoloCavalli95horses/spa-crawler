@@ -51,6 +51,11 @@ export class HttpEventStore {
     if (clearOnStart) this.db.exec('DELETE FROM http_events');
   }
 
+  /** Removes every row for one site: used to overwrite a single domain's previous run without touching the others. */
+  clearSite({ site }: { site: string }): void {
+    this.db.prepare('DELETE FROM http_events WHERE site = ?').run(site);
+  }
+
   /**
    * Inserts the request, or bumps seen_count if the same (site, fingerprint) was already stored:
    * the only place duplicates across tabs/reloads get collapsed.

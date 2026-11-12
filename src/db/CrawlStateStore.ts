@@ -33,6 +33,11 @@ export class CrawlStateStore {
     if (clearOnStart) this.db.exec('DELETE FROM crawl_states');
   }
 
+  /** Removes every row for one site: used to overwrite a single domain's previous run without touching the others. */
+  clearSite({ site }: { site: string }): void {
+    this.db.prepare('DELETE FROM crawl_states WHERE site = ?').run(site);
+  }
+
   has(site: string, id: string): boolean {
     return this.db.prepare('SELECT 1 FROM crawl_states WHERE site = ? AND id = ?').get(site, id) !== undefined;
   }
