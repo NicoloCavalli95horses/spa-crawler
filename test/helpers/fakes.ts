@@ -22,6 +22,12 @@ export class FakeApp {
   current: string;
   gotoCount = 0;
   clicks: string[] = [];
+  /**
+   * element id -> how many of its upcoming locate() calls must still miss before it becomes
+   * locatable, simulating an intermittent interstitial that covers the target on the first few
+   * landings and then clears. Each miss decrements the counter.
+   */
+  flakyLocate = new Map<string, number>();
 
   constructor(public transitions: Record<string, Record<string, string>>, public root = 'S0') {
     this.current = root;
@@ -57,9 +63,18 @@ export class FakeApp {
         this.current = next;
         return true;
       },
-      // the element is "present" when it is one of the current state's clickables
-      locate: async (_page: Page, action: Action) =>
-        action.target.id in (this.transitions[this.current] ?? {}),
+      // the element is "present" when it is one of the current state's clickables — unless it is
+      // still flaky, in which case this landing misses it (and the remaining-miss counter ticks down)
+      locate: async (_page: Page, action: Action) => {
+        const id = action.target.id;
+        if (!(id in (this.transitions[this.current] ?? {}))) return false;
+        const remainingMisses = this.flakyLocate.get(id) ?? 0;
+        if (remainingMisses > 0) {
+          this.flakyLocate.set(id, remainingMisses - 1);
+          return false;
+        }
+        return true;
+      },
     };
   }
 }

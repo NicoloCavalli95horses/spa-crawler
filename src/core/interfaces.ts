@@ -23,8 +23,24 @@ export interface IStateStore {
   has(id: string): boolean;
   count(): number;
   save(page: Page, s: UIState): Promise<void>;
-  isExplored(stateId: string, elId: string): boolean;
-  markExplored(stateId: string, elId: string): void;
+  /**
+   * Synchronously takes ownership of a (state, element) attempt. Returns false if the pair is
+   * already done (successfully clicked, or given up after the attempt budget) or currently being
+   * attempted by another tab. Being synchronous and side-effecting, it is the claim that keeps two
+   * tabs from clicking the same element: whoever calls it first wins, with no await in between.
+   */
+  claim(stateId: string, elId: string): boolean;
+  /**
+   * Reports the outcome of a claimed attempt. 'done' closes the pair for good (a successful click,
+   * or an error that is not worth hammering). 'miss' means the element could not be located this
+   * time (an intermittent interstitial, a not-yet-rendered target): it is released for a later
+   * retry, until the attempt budget runs out, after which it too becomes 'done'.
+   */
+  release(stateId: string, elId: string, outcome: 'done' | 'miss'): void;
+  /** True once the pair is closed (clicked or given up): used to skip it and to retire a state. */
+  isDone(stateId: string, elId: string): boolean;
+  /** True if the pair can be claimed right now (never tried, or missed but not yet out of budget). */
+  isClaimable(stateId: string, elId: string): boolean;
 }
 export interface IStateGraph {
   addEdge(from: string, a: Action, to: string): void;

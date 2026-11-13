@@ -25,12 +25,17 @@ function newPersistence(): { crawlStates: CrawlStateStore; crawlEdges: CrawlEdge
 }
 
 /** Real engine (navigator, store, graph) on a simulated app. */
-function run(app: FakeApp, limits: Partial<ExplorationLimits> = {}, capturer?: IStateCapturer) {
+function run(
+  app: FakeApp,
+  limits: Partial<ExplorationLimits> = {},
+  capturer?: IStateCapturer,
+  restoreAttempts?: number,
+) {
   const { crawlStates, crawlEdges } = newPersistence();
   const cap = capturer ?? app.capturer();
   const executor = app.executor();
   const navigator = new StateNavigator('https://app.test/', executor, noWait, undefined, { timeoutMs: 0 });
-  const store = new StateStore({ screenshots: false }, SITE, crawlStates);
+  const store = new StateStore({ screenshots: false, restoreAttempts }, SITE, crawlStates);
   const graph = new StateGraph(SITE, crawlEdges);
   const explorer = new DfsExplorer(noWait, executor, cap, navigator, store, graph,
     { maxDepth: 10, maxStates: 1000, maxDurationSecs: 3600, ...limits });
@@ -97,6 +102,26 @@ describe('DfsExplorer', () => {
     const r = run(app, { maxDurationSecs: 0 });
     await r.explore();
     assert.deepEqual(r.saved(), ['S0']);
+  });
+
+  it('retries an intermittently unreachable element instead of pruning its branch', async () => {
+    // 'a' leads to S1 but is covered on its first landings (an intermittent interstitial); within
+    // the attempt budget it is eventually located, so S1 must still be discovered.
+    const app = new FakeApp({ S0: { a: 'S1', b: 'S2' }, S1: { c: 'S3' }, S2: {}, S3: {} });
+    app.flakyLocate.set('a', 2);   // misses twice, then clears — under the budget of 4
+    const r = run(app, {}, undefined, 4);
+    await r.explore();
+    // S1 (and its own child S3) are reached despite the early misses
+    assert.deepEqual(r.saved(), ['S0', 'S1', 'S2', 'S3']);
+  });
+
+  it('gives up a persistently unreachable element after the budget, without losing its siblings', async () => {
+    const app = new FakeApp({ S0: { a: 'S1', b: 'S2' }, S1: {}, S2: {} });
+    app.flakyLocate.set('a', 999);   // never locatable: exhausts the budget and is abandoned
+    const r = run(app, {}, undefined, 3);
+    await r.explore();
+    // the run terminates; 'a's branch is dropped but the sibling 'b' -> S2 is fully explored
+    assert.deepEqual(r.saved(), ['S0', 'S2']);
   });
 
   it('an error on one element does not stop the others', async () => {

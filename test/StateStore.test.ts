@@ -65,12 +65,44 @@ describe('StateStore', () => {
     assert.equal(rows[0].hasScreenshot, false);
   });
 
-  it('tracks the explored state-element pairs', () => {
+  it('claims a pair exclusively and closes it on a successful attempt', () => {
     const { store } = newStore();
-    assert.equal(store.isExplored('S1', 'a'), false);
-    store.markExplored('S1', 'a');
-    assert.equal(store.isExplored('S1', 'a'), true);
-    assert.equal(store.isExplored('S2', 'a'), false);
-    assert.equal(store.isExplored('S1', 'b'), false);
+    assert.equal(store.isClaimable('S1', 'a'), true);
+    assert.equal(store.claim('S1', 'a'), true);
+    assert.equal(store.claim('S1', 'a'), false, 'a claimed pair cannot be claimed again while in progress');
+    assert.equal(store.isClaimable('S1', 'a'), false, 'in-progress pair is not claimable');
+    store.release('S1', 'a', 'done');
+    assert.equal(store.isDone('S1', 'a'), true);
+    assert.equal(store.claim('S1', 'a'), false, 'a done pair is never claimable again');
+    // other pairs are independent
+    assert.equal(store.isClaimable('S2', 'a'), true);
+    assert.equal(store.isClaimable('S1', 'b'), true);
+  });
+
+  it('retries a missed pair until the attempt budget runs out, then gives up', () => {
+    const s = new StateStore({ screenshots: false, restoreAttempts: 3 }, 'a.test', newStore().persistent);
+    // miss 1
+    assert.equal(s.claim('S1', 'a'), true);
+    s.release('S1', 'a', 'miss');
+    assert.equal(s.isDone('S1', 'a'), false, 'still has budget after one miss');
+    assert.equal(s.isClaimable('S1', 'a'), true, 'released for another attempt');
+    // miss 2
+    assert.equal(s.claim('S1', 'a'), true);
+    s.release('S1', 'a', 'miss');
+    assert.equal(s.isDone('S1', 'a'), false);
+    // miss 3 reaches the budget (3) -> given up
+    assert.equal(s.claim('S1', 'a'), true);
+    s.release('S1', 'a', 'miss');
+    assert.equal(s.isDone('S1', 'a'), true, 'out of budget: given up as unreachable');
+    assert.equal(s.isClaimable('S1', 'a'), false);
+  });
+
+  it('a success after a miss still closes the pair', () => {
+    const s = new StateStore({ screenshots: false, restoreAttempts: 4 }, 'a.test', newStore().persistent);
+    s.claim('S1', 'a');
+    s.release('S1', 'a', 'miss');
+    s.claim('S1', 'a');
+    s.release('S1', 'a', 'done');
+    assert.equal(s.isDone('S1', 'a'), true);
   });
 });

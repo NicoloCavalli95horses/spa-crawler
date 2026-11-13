@@ -12,6 +12,12 @@ export interface ExplorationLimits {
   maxDurationSecs: number;  // time budget: shuts down before the Crawlee timeout
 }
 
+/** Outcome of attempting one (state, element) pair. */
+interface StepResult {
+  reached: boolean;         // the element was located and clicked (vs only missed on this landing)
+  next: UIState | null;     // the resulting state, when it is new and worth recursing into
+}
+
 /** A tab that explores: it has its own page and its own count of saved states. */
 interface Worker {
   page: Page;
@@ -88,12 +94,23 @@ export class DfsExplorer {
     }
   }
 
-  /** The oldest state with elements still to try: short path, hence a cheap restore. */
+  /**
+   * The oldest state that still has an element claimable right now (shorter path first, hence a
+   * cheaper restore). A state whose every element is done is retired from the frontier. A state that
+   * has only in-progress elements left (all currently claimed by other tabs) is kept but skipped
+   * over, since a missed attempt may release one of them back for a retry — so, unlike the elements
+   * being done, it is not safe to drop it.
+   */
   private claimable(): UIState | null {
-    while (this.frontier.length > 0) {
-      const s = this.frontier[0];
-      if (s.clickables.some((el) => !this.store.isExplored(s.id, el.id))) return s;
-      this.frontier.shift();
+    let i = 0;
+    while (i < this.frontier.length) {
+      const s = this.frontier[i];
+      if (s.clickables.every((el) => this.store.isDone(s.id, el.id))) {
+        this.frontier.splice(i, 1);   // fully explored (clicked or given up): retire it
+        continue;
+      }
+      if (s.clickables.some((el) => this.store.isClaimable(s.id, el.id))) return s;
+      i++;   // only in-progress elements left here: keep it, look at the next state
     }
     return null;
   }
@@ -109,34 +126,45 @@ export class DfsExplorer {
 
     for (const el of state.clickables) {
       if (this.limitReached(w)) return;
-      if (this.store.isExplored(state.id, el.id)) continue;
-      this.store.markExplored(state.id, el.id);
+      // claim is the synchronous, exclusive gate: skips a pair that is already done or that another
+      // tab is attempting right now. A pair missed earlier (but still within budget) is claimable
+      // again, so it is retried here on this later landing of the state.
+      if (!this.store.claim(state.id, el.id)) continue;
 
-      let next: UIState | null = null;
+      let result: StepResult;
       try {
-        next = await this.step(w, state, el);
+        result = await this.step(w, state, el);
       } catch (err) {
-        // a problematic element only costs its own branch
+        // an exception is a real error, not volatility: close the pair (don't hammer it) and move
+        // on — a problematic element still only costs its own branch
         log.warning(`Error on "${el.text ?? el.selector}" in state ${state.id}: ${(err as Error).message}`);
+        this.store.release(state.id, el.id, 'done');
         continue;
       }
-      if (next) await this.visit(w, next);
+      // reached === the element was found and clicked; a miss is released for a later retry so an
+      // intermittent interstitial never permanently prunes this branch (see StateStore.release)
+      this.store.release(state.id, el.id, result.reached ? 'done' : 'miss');
+      if (result.next) await this.visit(w, result.next);
     }
   }
 
-  /** Restores the state, clicks the element, captures the result. Returns the state if it is new. */
-  private async step(w: Worker, state: UIState, el: ElementDescriptor): Promise<UIState | null> {
+  /**
+   * Restores the state, clicks the element, captures the result. `reached` tells visit whether the
+   * element was actually found and clicked (so the pair is done) or only missed (so it is worth
+   * retrying later); `next` is the resulting state when it is new and worth recursing into.
+   */
+  private async step(w: Worker, state: UIState, el: ElementDescriptor): Promise<StepResult> {
     const { page } = w;
     if (!(await this.navigator.restore(page, state, el))) {
-      log.debug(`State ${state.id} cannot be restored, skipping "${el.text ?? el.selector}"`);
-      return null;
+      log.debug(`State ${state.id} could not be restored for "${el.text ?? el.selector}" — will retry if budget allows`);
+      return { reached: false, next: null };
     }
 
     // we are now on `state`: let hooks (e.g. the extension) record it before we click away from it
     await this.hooks?.beforeAction?.(page);
 
     const action: Action = { type: 'click', target: el };
-    if (!(await this.executor.execute(page, action))) return null;
+    if (!(await this.executor.execute(page, action))) return { reached: false, next: null };
 
     const next = await this.capture(page, [...state.path, action], state.depth + 1);
     // still on the clicked result and stable: let hooks (e.g. the extension) finish analysing it
@@ -145,12 +173,12 @@ export class DfsExplorer {
     await this.hooks?.afterAction?.(page);
     this.graph.addEdge(state.id, action, next.id);
     // has and save are synchronous up to the insertion: of two tabs arriving together, only the first one saves
-    if (this.store.has(next.id)) return null;   // state already seen: no recursion
+    if (this.store.has(next.id)) return { reached: true, next: null };   // state already seen: no recursion
 
     await this.save(w, next);
     await this.graph.persist();   // the graph grows along with the states: readers see it up to date while the exploration is running
     log.info(`New state ${next.id} at depth ${next.depth} (${next.clickables.length} clickables)`);
-    return next;
+    return { reached: true, next };
   }
 
   private limitReached(w: Worker): boolean {
