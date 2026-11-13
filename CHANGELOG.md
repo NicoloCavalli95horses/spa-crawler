@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-13 15:57 — GET-only forging; network-aware probe window; authz classifier reads keys as words
+Three changes after testing a third app (lingualeo), whose training routes render only after a POST and whose authz field is `available`.
+
+- **GET-only forging (safety).** The analysis now forges GET and nothing else. Replaying a captured POST/PUT/PATCH/DELETE with a swapped id would re-trigger a state change on the live target (record progress, mutate or delete another user's resource) — unsafe and unethical for a probe that must only read. Non-GET events are skipped in candidate generation, and `forgeRequest` refuses a non-GET method as a hard backstop. (The client-routing probe navigates via `pushState`, a read; it does not forge.)
+- **Network-aware probe window.** A route whose content loads through a fetch/XHR (e.g. the app POSTs for the view's data, then renders the response) is no longer reported "no reaction" when the DOM is momentarily quiet mid-load: `waitDomIdle` now refuses to settle while a request is in flight (transparent fetch/XHR counters on `window.__probeInflight`, restored after the probe), bounded by the ceiling. Ceiling raised `2500 → 3000`. Verified on lingualeo: `savannah → wordsCards` now reports `hasMutatedDom: true` stably (was a flaky miss).
+- **Authz classifier reads keys as words.** The embedding classifier scored compound/boolean keys far below threshold because it embedded them as one opaque token (`isLessonUnlocked` 0.157, `available` 0.234). It now splits camelCase/snake/kebab into words and frames them as a yes/no condition (`"whether is lesson unlocked"`) before embedding — how authorization fields actually read. Measured recovery: `available` 0.234 → 0.405, `isAvailable`/`isLocked`/`isLessonUnlocked` now above threshold, with `isFree` (pimsleur) and `unlocked`/`disabled` (busuu) kept and **zero** new false positives across 16 negative keys and 8 id-like values. Not a hand-maintained list — linguistic normalization. Classifications are cached by the normalized form, which also invalidates entries a previous run stored.
+- No regression: pimsleur 4/4, busuu 19/19, full suite 230/230.
+
 ## 2026-11-13 14:54 — Parallelize the client-routing analysis phase over a page pool
 The end-of-crawl analysis was dominated by the client-routing phase (pushState probe + not-found screenshot per candidate), which serialized on one shared page because each candidate mutates that page's live DOM. On a real busuu crawl this phase ran the analysis to ~6–7 min while the exploration itself took ~1–2.
 
