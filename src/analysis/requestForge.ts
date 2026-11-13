@@ -18,6 +18,12 @@ export interface ResponseLike {
 export async function forgeRequest({ page, url, method, headers, postData }: {
   page: Page; url: string; method: string; headers?: Record<string, string>; postData?: string;
 }): Promise<ResponseLike> {
+  // Hard safety backstop: this detector only ever READS, so it forges GET and nothing else. A
+  // non-GET forge would replay a state-changing request against the live target — never acceptable
+  // for an authz probe. Callers already filter to GET; this refuses anything that slips through.
+  if (method.toUpperCase() !== 'GET') {
+    throw new Error(`forgeRequest refuses non-GET method "${method}" (IDOR probing is read-only)`);
+  }
   // HTTP/2 responses surface pseudo-headers (:authority, :method, :path, :scheme) via
   // Playwright's allHeaders(); APIRequestContext.fetch rejects them as invalid HTTP tokens.
   const filteredHeaders = headers

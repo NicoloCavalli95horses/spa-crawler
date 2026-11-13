@@ -157,6 +157,11 @@ export class AnalysisPipeline {
     let candidatesFound = 0;
 
     for (const event of events) {
+      // Only GET is ever forged. Replaying a captured POST/PUT/PATCH/DELETE with a swapped id would
+      // re-trigger a state change on the target site (record progress, mutate/delete another user's
+      // resource) — unsafe and unethical for an authz probe, which must only READ. Non-GET events are
+      // skipped here; forgeRequest also refuses them as a hard backstop.
+      if (event.method.toUpperCase() !== 'GET') continue;
       const found = this.findUrlCandidates({ url: event.url });
       segmentsExtracted += found.segments;
       matchesFound += found.matches;
