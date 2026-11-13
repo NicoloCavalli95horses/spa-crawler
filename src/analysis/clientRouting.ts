@@ -1,4 +1,10 @@
-import type { Page } from 'playwright';
+import type { Page, Response } from 'playwright';
+
+/** A same-site request the route change triggered, and the status the server answered it with. */
+export interface ProbeRequest {
+  url: string;
+  status: number;
+}
 
 export interface ClientRoutingResult {
   isUsingNewParams: boolean;
@@ -8,6 +14,12 @@ export interface ClientRoutingResult {
   // and redirected elsewhere" — both mutate the DOM, but only the first is evidence of anything. See
   // isUsingNewParams's own redirect guard below for why this matters.
   finalUrl: string;
+  // Requests whose URL carries the candidate value, fired by the app WHILE the probe rendered the
+  // candidate route (network "ground truth"): a 403/404 here means the app asked the backend for the
+  // candidate resource and was denied / told it does not exist, so the route "rendering" is just an
+  // error page, not unauthorized access. Empty when nothing matching was observed (a purely
+  // client-routed page, or a probe run without a watch value).
+  probeRequests: ProbeRequest[];
 }
 
 /**
@@ -110,7 +122,8 @@ export async function checkClientSideRouting({ page, paramName, paramValue, minW
     };
   })()`;
 
-  return page.evaluate(script) as Promise<ClientRoutingResult>;
+  // the app re-fetches with the swapped query value, so a matching response URL carries paramValue
+  return evaluateProbe({ page, script, watchValue: paramValue });
 }
 
 /**
@@ -134,8 +147,8 @@ export async function checkClientSideRouting({ page, paramName, paramValue, minW
  * segment at all, so hasMutatedDom used to be the ENTIRE signal — any redirect-away looked identical
  * to a genuine accept.
  */
-export async function checkClientSideRoutingForPath({ page, targetUrl, minWaitMs = 3_000, idleMs = 300 }: {
-  page: Page; targetUrl: string; minWaitMs?: number; idleMs?: number;
+export async function checkClientSideRoutingForPath({ page, targetUrl, candidateValue, minWaitMs = 3_000, idleMs = 300 }: {
+  page: Page; targetUrl: string; candidateValue?: string; minWaitMs?: number; idleMs?: number;
 }): Promise<ClientRoutingResult> {
   const script = `(async () => {
     const targetUrl = ${JSON.stringify(targetUrl)};
@@ -162,5 +175,54 @@ export async function checkClientSideRoutingForPath({ page, targetUrl, minWaitMs
     return { hasMutatedDom: hasMutatedDom, finalUrl: finalUrl, isUsingNewParams: hasMutatedDom && stayedOnTargetPath };
   })()`;
 
-  return page.evaluate(script) as Promise<ClientRoutingResult>;
+  // candidateValue is the swapped path segment: a response URL carrying it is the app's own fetch
+  // for the candidate resource (its status is the network ground truth). Optional so existing
+  // callers (reproduction scripts) keep working with no network signal, exactly as before.
+  return evaluateProbe({ page, script, watchValue: candidateValue });
+}
+
+/**
+ * Runs a probe script in the page, degrading any failure to a benign "the app did not react"
+ * result instead of throwing. The probe's own pushState + synthetic popstate can make the app's
+ * router perform a REAL navigation, which destroys the execution context mid-`page.evaluate`
+ * ("Execution context was destroyed, most likely because of a navigation"). Left unhandled that
+ * rejection used to crash the entire analysis run partway through the client-routing phase; it is
+ * never evidence of an authorization issue (the candidate value was never confirmed to render), so
+ * reporting "not using new params" is both safe and correct. The caller's queue re-navigates back
+ * to the page URL before the next probe, so a destroyed context does not strand later candidates.
+ */
+async function evaluateProbe({ page, script, watchValue }: {
+  page: Page; script: string; watchValue?: string;
+}): Promise<ClientRoutingResult> {
+  // Network ground truth: collect the status of every same-session response whose URL carries the
+  // candidate value while the probe renders the route. Scoped by `watchValue` so the probe's own
+  // rollback fetch (which targets the ORIGINAL url, not the candidate) and unrelated analytics never
+  // count. The probe is serialized, so this window belongs to this candidate alone.
+  const probeRequests: ProbeRequest[] = [];
+  const onResponse = watchValue
+    ? (response: Response) => {
+        try {
+          const url = response.url();
+          if (url.includes(watchValue)) probeRequests.push({ url, status: response.status() });
+        } catch { /* response object went away with a navigation */ }
+      }
+    : undefined;
+  if (onResponse) page.on('response', onResponse);
+  try {
+    const result = await (page.evaluate(script) as Promise<Omit<ClientRoutingResult, 'probeRequests'>>);
+    return { ...result, probeRequests };
+  } catch {
+    return { hasMutatedDom: false, isUsingNewParams: false, finalUrl: safeUrl(page), probeRequests };
+  } finally {
+    if (onResponse) page.off('response', onResponse);
+  }
+}
+
+/** page.url() without throwing (a closed/navigating page can still reject here on some builds). */
+function safeUrl(page: Page): string {
+  try {
+    return page.url();
+  } catch {
+    return '';
+  }
 }

@@ -72,6 +72,17 @@ export class PreindexedValueStore {
     return rows.map((r) => ({ stateId: r.state_id, nodeId: r.node_id, path: JSON.parse(r.path), depth: r.depth }));
   }
 
+  /**
+   * How many preindexed nodes carry this exact value (uses idx_preindexed_values_value, so it never
+   * materializes the rows). Lets a caller cheaply tell a user-scoped identifier — which appears a
+   * bounded handful of times (an objective/exercise id: tens) — apart from a generic keyword that
+   * happens to also be a URL segment (a DOM tag/role/category word like "svg"/"grammar": thousands),
+   * before paying to fetch and diff every match.
+   */
+  countByValue(value: string): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM preindexed_values WHERE value = ?').get(value) as { n: number }).n;
+  }
+
   count(): number {
     return (this.db.prepare('SELECT COUNT(*) AS n FROM preindexed_values').get() as { n: number }).n;
   }

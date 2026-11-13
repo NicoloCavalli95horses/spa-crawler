@@ -3,7 +3,7 @@ import type { Page } from 'playwright';
 import { log } from 'crawlee';
 import type { HttpEventStore } from '../db/HttpEventStore';
 import type { PreindexedValueStore } from '../db/PreindexedValueStore';
-import type { ReactStateStore } from '../db/ReactStateStore';
+import type { ReactStateStore, RapidorGraph } from '../db/ReactStateStore';
 import type { CrawlStateStore } from '../db/CrawlStateStore';
 import type { VulnerabilityStore } from '../db/VulnerabilityStore';
 import type { AnalysisStatsStore } from '../db/AnalysisStatsStore';
@@ -14,6 +14,7 @@ import { forgeRequestCached, runWithConcurrency, sleep } from './requestForge';
 import { getServerResponseSimilarity, compareObj, describeDiffs, type PropDiff } from './responseEvaluate';
 import { assessAuthZ, type AuthzClassifier } from './authzClassifier';
 import { checkClientSideRouting, checkClientSideRoutingForPath, type ClientRoutingResult } from './clientRouting';
+import { captureRouteScreenshot, screenshotDiffFraction, makeGarbageValue } from './routeScreenshot';
 import { formatDuration } from '../core/duration';
 import { writeReproductionScript, type ReproductionKind } from './reproductionScript';
 
@@ -24,6 +25,8 @@ export interface AnalysisPipelineOptions {
   userDataDir?: string;    // so it can reopen the same (authenticated, if persistent) browser profile
   reportsDir: string;      // reproduction scripts land in <reportsDir>/<site>/<findingId>.repro.ts
   clientRoutingProbe: { minWaitMs: number; idleMs: number };  // see config.analysis.clientRoutingProbe's own comment
+  maxSegmentMatches: number; // skip a URL segment whose value appears in more preindexed nodes than this: a generic keyword, not an identifier (see config.analysis.maxSegmentMatches)
+  notFoundScreenshotMaxDiff: number; // a client-routing candidate whose rendered screenshot differs from the calibrated not-found page by no more than this fraction of pixels is the app's own not-found page, not a real resource — rejected (see config.analysis.notFoundScreenshotMaxDiff)
 }
 
 export interface AnalysisPipelineDeps {
@@ -48,6 +51,19 @@ const CLIENT_ROUTING_METHOD = 'CLIENT';
 // probe's un-awaited rollback render a moment to actually finish before the retry starts its own.
 const MAX_CLIENT_ROUTING_ATTEMPTS = 3;
 const CLIENT_ROUTING_RETRY_DELAY_MS = 250;
+
+/**
+ * Network ground truth for a client-routing candidate: among the requests the app fired for the
+ * candidate value while the probe rendered its route, was any answered with a client/forbidden/not-
+ * found status (>= 400)? A 403 means the authorization control WORKED (correctly denied) and a 404
+ * means the resource does not exist — neither is unauthorized access, so a route that "rendered"
+ * only because of such a response is a false positive and must be rejected. No matching request
+ * (empty) means the value is purely client-routed (no backend call carried it): inconclusive here,
+ * left to the visual not-found baseline. A 2xx is the only thing that keeps the candidate alive.
+ */
+function networkRejectsCandidate(probeRequests: { status: number }[]): boolean {
+  return probeRequests.length > 0 && probeRequests.some((r) => r.status >= 400);
+}
 
 /**
  * Server-side port of RAPIDOR's preindex -> matchFinder -> requestGenerator -> responseEvaluator
@@ -76,10 +92,26 @@ export class AnalysisPipeline {
   // own enqueueNavigation() around the same operation.
   private clientRoutingQueue: Promise<unknown> = Promise.resolve();
 
+  // Per-run cache of React graphs parsed from the DB. findUrlCandidates looks a state's graph up
+  // once per preindex match (tens of thousands of times for a rich site), but there are only as
+  // many DISTINCT graphs as captured react_states (a couple hundred at most): without this, the
+  // candidate-generation phase spent most of its time re-running JSON.parse on the SAME ~150KB graph
+  // strings over and over. Cleared at the start of each runForSite so it never grows across sites or
+  // goes stale against a later re-run.
+  private graphCache = new Map<number, RapidorGraph | undefined>();
+
+  // Per-run cache of the app's "not found" screenshot for each route template (the candidate URL with
+  // its id slot blanked out): calibrated once per template by rendering a garbage value, then reused
+  // to recognize any candidate on that template whose render is just the not-found page. `undefined`
+  // means calibration was attempted but produced no usable shot, so don't keep retrying it.
+  private notFoundBaselines = new Map<string, Buffer | undefined>();
+
   constructor(private deps: AnalysisPipelineDeps) {}
 
   async runForSite({ page, site, explorationMs }: { page: Page; site: string; explorationMs: number }): Promise<void> {
     const analysisStartedAt = Date.now();
+    this.graphCache.clear();
+    this.notFoundBaselines.clear();
     const { httpEventStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, options } = this.deps;
     const events = httpEventStore.listBySite(site);
     const pageUrls = reactStateStore.listUrlsBySite(site);
@@ -149,7 +181,18 @@ export class AnalysisPipeline {
 
     if (tasks.length > 0) {
       log.info(`AnalysisPipeline: dispatching ${tasks.length} candidate request(s) for ${site}`);
-      await runWithConcurrency({ tasks, limit: options.maxConcurrentRequests });
+      // Isolate each candidate: one task throwing (a forged request erroring, a client-routing probe
+      // whose navigation destroys the page context, ...) must not reject the whole pool and abort the
+      // run — that would lose analysis_stats and every not-yet-dispatched candidate. A failure is
+      // logged and treated as "no finding", same as a candidate that was simply rejected.
+      const guarded = tasks.map((task) => async () => {
+        try {
+          await task();
+        } catch (err) {
+          log.warning(`AnalysisPipeline: candidate task failed (skipped): ${(err as Error).message}`);
+        }
+      });
+      await runWithConcurrency({ tasks: guarded, limit: options.maxConcurrentRequests });
     }
 
     const analysisMs = Date.now() - analysisStartedAt;
@@ -175,16 +218,23 @@ export class AnalysisPipeline {
     matches: number;
     items: { segment: SegmentCandidate; candidate: ReturnType<typeof findCandidates>[number] }[];
   } {
-    const { preindexStore, reactStateStore } = this.deps;
+    const { preindexStore } = this.deps;
     let segments = 0;
     let matches = 0;
     const items: { segment: SegmentCandidate; candidate: ReturnType<typeof findCandidates>[number] }[] = [];
 
     for (const segment of extractSegments({ url })) {
       segments++;
+      // A value carried by thousands of React nodes is a generic keyword (a DOM tag/role/category
+      // word that also happens to be a URL segment), not a user-scoped identifier: swapping it is
+      // pure noise, and the fan-out (every match x its component siblings, across every URL that
+      // shares the word) is what made candidate generation explode. Identifiers appear a bounded
+      // handful of times, well under this cap, so this skips only the noise. countByValue never
+      // materializes the rows, so an over-cap segment costs a single COUNT, not a huge fetch.
+      if (preindexStore.countByValue(segment.value) > this.deps.options.maxSegmentMatches) continue;
       for (const match of preindexStore.findByValue(segment.value)) {
         matches++;
-        const graph = reactStateStore.getById(match.stateId);
+        const graph = this.getGraph(match.stateId);
         if (!graph) continue;
         for (const candidate of findCandidates({ stateId: match.stateId, graph, nodeId: match.nodeId, path: match.path })) {
           items.push({ segment, candidate });
@@ -192,6 +242,16 @@ export class AnalysisPipeline {
       }
     }
     return { segments, matches, items };
+  }
+
+  /** reactStateStore.getById, memoized for this run: each distinct graph is read + JSON.parsed once. */
+  private getGraph(stateId: number): RapidorGraph | undefined {
+    let graph = this.graphCache.get(stateId);
+    if (graph === undefined && !this.graphCache.has(stateId)) {
+      graph = this.deps.reactStateStore.getById(stateId);
+      this.graphCache.set(stateId, graph);
+    }
+    return graph;
   }
 
   /**
@@ -259,8 +319,18 @@ export class AnalysisPipeline {
         page, pageUrl: event.pageUrl,
         run: () => checkClientSideRouting({ page, paramName, paramValue: candidate.candidateValue, ...clientRoutingProbe }),
       });
+      if (networkRejectsCandidate(clientRouting.probeRequests)) {
+        log.debug(`AnalysisPipeline: candidate rejected (backend ${describeProbeStatuses(clientRouting.probeRequests)}) — ${event.pageUrl} ?${paramName}=${candidate.candidateValue}`);
+        return;
+      }
       if (!clientRouting.isUsingNewParams) {
         log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${event.pageUrl} ?${paramName}=${candidate.candidateValue}`);
+        return;
+      }
+      const clientCandidateUrl = withParam({ url: event.pageUrl, name: paramName, value: candidate.candidateValue });
+      if (!networkConfirmsCandidate(clientRouting.probeRequests)
+          && await this.looksLikeNotFound({ page, pageUrl: event.pageUrl, candidateUrl: clientCandidateUrl, candidateValue: candidate.candidateValue })) {
+        log.debug(`AnalysisPipeline: candidate rejected (renders the app's not-found page) — ${event.pageUrl} ?${paramName}=${candidate.candidateValue}`);
         return;
       }
       detectionMethod = 'client-routing';
@@ -310,8 +380,17 @@ export class AnalysisPipeline {
       page, pageUrl,
       run: () => checkClientSideRouting({ page, paramName, paramValue: candidate.candidateValue, ...clientRoutingProbe }),
     });
+    if (networkRejectsCandidate(clientRouting.probeRequests)) {
+      log.debug(`AnalysisPipeline: candidate rejected (backend ${describeProbeStatuses(clientRouting.probeRequests)}) — ${pageUrl} ?${paramName}=${candidate.candidateValue}`);
+      return;
+    }
     if (!clientRouting.isUsingNewParams) {
       log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${pageUrl} ?${paramName}=${candidate.candidateValue}`);
+      return;
+    }
+    if (!networkConfirmsCandidate(clientRouting.probeRequests)
+        && await this.looksLikeNotFound({ page, pageUrl, candidateUrl, candidateValue: candidate.candidateValue })) {
+      log.debug(`AnalysisPipeline: candidate rejected (renders the app's not-found page) — ${pageUrl} -> ${candidateUrl}`);
       return;
     }
 
@@ -359,10 +438,19 @@ export class AnalysisPipeline {
 
     const clientRouting = await this.enqueueClientRoutingCheck({
       page, pageUrl,
-      run: () => checkClientSideRoutingForPath({ page, targetUrl: candidateUrl, ...clientRoutingProbe }),
+      run: () => checkClientSideRoutingForPath({ page, targetUrl: candidateUrl, candidateValue: candidate.candidateValue, ...clientRoutingProbe }),
     });
+    if (networkRejectsCandidate(clientRouting.probeRequests)) {
+      log.debug(`AnalysisPipeline: candidate rejected (backend ${describeProbeStatuses(clientRouting.probeRequests)}) — ${pageUrl} -> ${candidateUrl}`);
+      return;
+    }
     if (!clientRouting.isUsingNewParams) {
       log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${pageUrl} -> ${candidateUrl}`);
+      return;
+    }
+    if (!networkConfirmsCandidate(clientRouting.probeRequests)
+        && await this.looksLikeNotFound({ page, pageUrl, candidateUrl, candidateValue: candidate.candidateValue })) {
+      log.debug(`AnalysisPipeline: candidate rejected (renders the app's not-found page) — ${pageUrl} -> ${candidateUrl}`);
       return;
     }
 
@@ -435,7 +523,7 @@ export class AnalysisPipeline {
       if (page.url() !== pageUrl) {
         await page.goto(pageUrl, { waitUntil: 'load', timeout: 10_000 }).catch(() => undefined);
       }
-      let attempt: ClientRoutingResult = { hasMutatedDom: false, isUsingNewParams: false, finalUrl: pageUrl };
+      let attempt: ClientRoutingResult = { hasMutatedDom: false, isUsingNewParams: false, finalUrl: pageUrl, probeRequests: [] };
       for (let i = 0; i < MAX_CLIENT_ROUTING_ATTEMPTS; i++) {
         attempt = await run();
         if (attempt.isUsingNewParams) return attempt;
@@ -445,6 +533,67 @@ export class AnalysisPipeline {
     });
     this.clientRoutingQueue = result.catch(() => undefined);
     return result;
+  }
+
+  /**
+   * Serializes a single page-mutating capture on the SAME queue as the probes (no retry loop), so a
+   * screenshot never renders while a probe is mid-mutation on the shared page. Re-navigates to
+   * `pageUrl` first if the page drifted, exactly like enqueueClientRoutingCheck.
+   */
+  private enqueueCapture<T>({ page, pageUrl, run }: { page: Page; pageUrl: string; run: () => Promise<T> }): Promise<T> {
+    const result = this.clientRoutingQueue.then(async () => {
+      if (page.url() !== pageUrl) {
+        await page.goto(pageUrl, { waitUntil: 'load', timeout: 10_000 }).catch(() => undefined);
+      }
+      return run();
+    });
+    this.clientRoutingQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  /**
+   * Visual not-found guard for a client-routing candidate that has no decisive network signal (no
+   * backend response carried its value, or none was 2xx): screenshots the candidate's rendered route
+   * and compares it against the app's own not-found page — calibrated once per route template by
+   * rendering a garbage id in the same slot. A near-identical render (within
+   * `notFoundScreenshotMaxDiff`) means the route only produced the not-found page, a false positive,
+   * so it is rejected. Returns false (keep the candidate) whenever it cannot decide: calibration or
+   * capture produced no shot, or the two could not be diffed.
+   */
+  private async looksLikeNotFound({ page, pageUrl, candidateUrl, candidateValue }: {
+    page: Page; pageUrl: string; candidateUrl: string; candidateValue: string;
+  }): Promise<boolean> {
+    const settleMs = this.deps.options.clientRoutingProbe.minWaitMs;
+    const template = candidateUrl.split(candidateValue).join('\u0000');   // id slot blanked out
+    if (!this.notFoundBaselines.has(template)) {
+      const garbageUrl = candidateUrl.split(candidateValue).join(makeGarbageValue(candidateValue));
+      const calibrated = await this.enqueueCapture({ page, pageUrl, run: () => captureRouteScreenshot({ page, testUrl: garbageUrl, settleMs }) });
+      this.notFoundBaselines.set(template, calibrated);
+    }
+    const baseline = this.notFoundBaselines.get(template);
+    if (!baseline) return false;
+
+    const candidateShot = await this.enqueueCapture({ page, pageUrl, run: () => captureRouteScreenshot({ page, testUrl: candidateUrl, settleMs }) });
+    if (!candidateShot) return false;
+
+    const frac = await screenshotDiffFraction({ a: candidateShot, b: baseline });
+    return frac !== undefined && frac <= this.deps.options.notFoundScreenshotMaxDiff;
+  }
+}
+
+/** True if the app answered the candidate's own fetch with a success status: trust it, skip the visual guard. */
+function networkConfirmsCandidate(probeRequests: { status: number }[]): boolean {
+  return probeRequests.some((r) => r.status >= 200 && r.status < 300);
+}
+
+/** The URL with one query param set to `value` (used to build a query candidate's own route for the visual guard). */
+function withParam({ url, name, value }: { url: string; name: string; value: string }): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.set(name, value);
+    return u.href;
+  } catch {
+    return url;
   }
 }
 
@@ -503,4 +652,10 @@ function describeClientRoutingRejection(result: ClientRoutingResult): string {
   return result.hasMutatedDom
     ? `DOM mutated but the app redirected away to ${result.finalUrl}`
     : 'no client-side DOM reaction';
+}
+
+/** Compact "denied/not-found 403,404" summary of the candidate's own backend responses, for the log. */
+function describeProbeStatuses(probeRequests: { status: number }[]): string {
+  const statuses = [...new Set(probeRequests.map((r) => r.status))].sort((a, b) => a - b).join(',');
+  return `answered the candidate fetch with ${statuses}`;
 }

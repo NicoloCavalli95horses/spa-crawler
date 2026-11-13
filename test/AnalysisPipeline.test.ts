@@ -53,6 +53,8 @@ describe('AnalysisPipeline: client-side-only query params', () => {
         maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports'),
         // test pages react near-instantly: a short window keeps the suite fast without masking a real miss
         clientRoutingProbe: { minWaitMs: 300, idleMs: 50 },
+        maxSegmentMatches: 300,
+        notFoundScreenshotMaxDiff: 0.02,
       },
     });
     return { pipeline, httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, classifier };
@@ -60,17 +62,24 @@ describe('AnalysisPipeline: client-side-only query params', () => {
 
   const { newPage } = useBrowser();
 
-  // A page that reads ?id= on every popstate and re-renders it — it never makes a network request
-  // for it, mirroring a SPA that resolves the id purely from already-loaded client state. Replaces
-  // the child element (not just its text) so the DOM mutation is a childList one: clientRouting.ts's
-  // MutationObserver only watches childList/attributes, same limitation noted in react-app-target.
+  // A client-routed SPA that resolves ?id from already-loaded state (no network request for it):
+  // a known id renders a large content block, an unknown id renders nothing — the app's own
+  // "not found". That distinction is what the screenshot not-found guard needs: a real candidate's
+  // render (a block) must differ visibly from the not-found baseline (blank, from a garbage id).
+  // Replaces children (childList mutation) so clientRouting.ts's MutationObserver sees it — it only
+  // watches childList/attributes, same limitation noted in react-app-target.
   const html = `<div id="out"></div><script>
+    const KNOWN = { '101': 1, '102': 1 };
     function render() {
       const out = document.getElementById('out');
       out.innerHTML = '';
-      const p = document.createElement('p');
-      p.textContent = new URLSearchParams(location.search).get('id');
-      out.appendChild(p);
+      const id = new URLSearchParams(location.search).get('id');
+      if (KNOWN[id]) {
+        const block = document.createElement('div');
+        block.style.cssText = 'width:1000px;height:600px;background:#3366cc';
+        block.textContent = id;
+        out.appendChild(block);
+      }
     }
     window.addEventListener('popstate', render);
     render();
@@ -97,6 +106,44 @@ describe('AnalysisPipeline: client-side-only query params', () => {
 
     const findings = vulnerabilityStore.count('app.test');
     assert.equal(findings, 1);
+  });
+
+  // Every id — the real candidate and the garbage calibration value alike — renders the same
+  // "not found" page: the route reacts (DOM mutates) but shows no real resource. The screenshot guard
+  // must recognize the candidate's render as the not-found baseline and reject it, even though the
+  // differing prop ('premium') is authz-relevant and would otherwise be flagged.
+  const notFoundHtml = `<div id="out"></div><script>
+    function render() {
+      const out = document.getElementById('out');
+      out.innerHTML = '';
+      const block = document.createElement('div');
+      block.style.cssText = 'width:1000px;height:600px;background:#cccccc';
+      block.textContent = 'Not found';
+      out.appendChild(block);
+    }
+    window.addEventListener('popstate', render);
+    render();
+  </script>`;
+
+  it('rejects a candidate whose render matches the app\'s not-found page (screenshot guard)', async () => {
+    const { pipeline, preindexStore, reactStateStore, vulnerabilityStore, classifier } = newPipeline();
+    (classifier as unknown as { cache: Map<string, unknown> }).cache.set('id', { score: 0, isAuthZRelevant: false });
+    (classifier as unknown as { cache: Map<string, unknown> }).cache.set('premium', { score: 1, isAuthZRelevant: true });
+
+    const page = await newPage();
+    await installParamUsageTracking(page);
+    await page.route(`${APP_ORIGIN}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: notFoundHtml }));
+    const pageUrl = `${APP_ORIGIN}/?id=101`;
+    await page.goto(pageUrl);
+
+    const graph = siblingGraph();
+    const stateId = reactStateStore.record({ site: 'app.test', url: pageUrl, graph })!;
+    preindexStore.reindex({ stateId, graph });
+
+    await pipeline.runForSite({ page, site: 'app.test', explorationMs: 1000 });
+
+    // DOM mutated and 'premium' is authz-relevant, but the render is the not-found page -> not flagged
+    assert.equal(vulnerabilityStore.count('app.test'), 0);
   });
 
   it('never flags anything when the differing props are not authz-relevant', async () => {
@@ -138,6 +185,8 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
       options: {
         maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports'),
         clientRoutingProbe: { minWaitMs: 300, idleMs: 50 },
+        maxSegmentMatches: 300,
+        notFoundScreenshotMaxDiff: 0.02,
       },
     });
     return { pipeline, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, classifier };
@@ -151,13 +200,20 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
   // MutationObserver sees it regardless of the actual value — there is no path equivalent of
   // __accessedParams (see checkClientSideRoutingForPath's doc comment), so the probe can only tell
   // "the router reacted to the URL change", not "it read this exact segment".
+  // Known ids render a large content block, an unknown id renders nothing (the app's own "not found")
+  // — so the screenshot guard can tell a real candidate's render from the not-found baseline.
   const html = `<div id="out"></div><script>
+    const KNOWN = { '101': 1, '102': 1 };
     function render() {
       const out = document.getElementById('out');
       out.innerHTML = '';
-      const p = document.createElement('p');
-      p.textContent = location.pathname.split('/').filter(Boolean)[1];
-      out.appendChild(p);
+      const id = location.pathname.split('/').filter(Boolean)[1];
+      if (KNOWN[id]) {
+        const block = document.createElement('div');
+        block.style.cssText = 'width:1000px;height:600px;background:#3366cc';
+        block.textContent = id;
+        out.appendChild(block);
+      }
     }
     window.addEventListener('popstate', render);
     render();
