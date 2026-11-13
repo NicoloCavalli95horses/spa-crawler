@@ -37,6 +37,7 @@ export interface CrawlConfig {
   startUrls: string[];          // sites to explore in one run (`npm start`); when empty, only startUrl is explored
   maxDepth: number;
   maxStates: number;            // cap on the states saved by each tab: guarantees termination
+  restoreAttempts: number;      // times a (state,element) pair is retried across landings before being given up as unreachable: absorbs intermittent interstitials without pruning a whole branch (see StateStoreOptions.restoreAttempts)
   maxDurationSecs: number;      // time budget per site: then the exploration shuts down on its own
   concurrency: number;          // sites explored in parallel
   tabsPerSite: number;          // tabs exploring the same site together (same context: shared cookies and storage)
@@ -84,6 +85,19 @@ export interface CrawlConfig {
     // analysis_stats) so the two are always comparable, never mixed. Off by default: it doubles the
     // forged-request traffic against the site under test for a comparison most runs don't need.
     ablationMode: boolean;
+    // candidate-generation guard: a URL segment whose value appears in MORE than this many
+    // preindexed React nodes is treated as a generic keyword (a DOM tag/role/category word that
+    // also happens to be a path segment — "svg", "grammar", "vocabulary"...), not a user-scoped
+    // identifier, and is skipped. Real identifiers (objective/exercise/activity ids) appear only a
+    // few tens of times, far below this, so nothing worth probing is lost; without it a single
+    // generic word fans out to thousands of matches times every URL that shares it, which is what
+    // made candidate generation take tens of minutes (and produced thousands of junk candidates).
+    maxSegmentMatches: number;
+    // client-routing false-positive guard: when a candidate route has no decisive network signal,
+    // its rendered screenshot is compared against the app's own "not found" page (calibrated by
+    // rendering a garbage id in the same slot). If no more than this fraction of pixels differ, the
+    // route only rendered the not-found page — a false positive — and the candidate is rejected.
+    notFoundScreenshotMaxDiff: number;
   };
   lightweight: LightweightConfig;
   extension?: ExtensionConfig;  // Chrome extension to load (optional)
@@ -96,8 +110,12 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   startUrl: process.env.START_URL || 'http://localhost:3000',
   // START_URLS="https://a.com,https://b.com" (comma and/or newline separated, quoted in .env if on several lines), or fill the array here: replaces startUrl in `npm start`
   startUrls: (process.env.START_URLS || '').split(/[\s,]+/).filter(Boolean),
-  maxDepth: 2,
+  maxDepth: 3,
   maxStates: 500,
+  // a landing page's interstitial (cookie/"welcome back" sheet) can appear on one reload and not the
+  // next, covering the target: retry a missed (state,element) a few times across landings before
+  // giving up, so one unlucky reload never prunes a whole branch
+  restoreAttempts: 4,
   maxDurationSecs: 1800, // 30min
   concurrency: 1,
   tabsPerSite: 10,
@@ -137,6 +155,10 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
     clientRoutingProbe: { minWaitMs: 3_000, idleMs: 300 },
     // ABLATION_MODE=true npm start to turn it on from the shell instead of editing this file
     ablationMode: process.env.ABLATION_MODE === 'true',
+    // a value in more than this many preindexed nodes is a generic keyword, not an identifier: skipped
+    maxSegmentMatches: 300,
+    // <= 2% of pixels differing from the calibrated not-found page => the candidate IS the not-found page
+    notFoundScreenshotMaxDiff: 0.02,
   },
   // USER_DATA_DIR enables a persistent profile (~ and $HOME are expanded); when unset, a temporary profile is used
   userDataDir: process.env.USER_DATA_DIR ? expandHome({ value: process.env.USER_DATA_DIR }) : undefined,

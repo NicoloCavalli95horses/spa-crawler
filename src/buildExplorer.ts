@@ -82,7 +82,7 @@ export function buildExplorer(
   const textExtractor = new PageTextExtractor({
     maxBlocks: cfg.text.maxBlocks, maxBlockLength: cfg.text.maxBlockLength,
   });
-  const store = new StateStore({ screenshots: cfg.screenshots }, site, crawlStates);
+  const store = new StateStore({ screenshots: cfg.screenshots, restoreAttempts: cfg.restoreAttempts }, site, crawlStates);
   const graph = new StateGraph(site, crawlEdges);
 
   // 2. modules that depend on the leaves
@@ -103,6 +103,8 @@ export function buildExplorer(
       maxConcurrentRequests: cfg.analysis.maxConcurrentRequests, timeBetweenRequestsMs: cfg.analysis.timeBetweenRequestsMs,
       dbPath: cfg.db.path, userDataDir: cfg.userDataDir, reportsDir: cfg.analysis.reportsDir,
       clientRoutingProbe: cfg.analysis.clientRoutingProbe,
+      maxSegmentMatches: cfg.analysis.maxSegmentMatches,
+      notFoundScreenshotMaxDiff: cfg.analysis.notFoundScreenshotMaxDiff,
     },
   });
 
