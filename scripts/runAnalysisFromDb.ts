@@ -67,6 +67,7 @@ const pipeline = new AnalysisPipeline({
     reportsDir: config.analysis.reportsDir,
     clientRoutingProbe: config.analysis.clientRoutingProbe,
     maxSegmentMatches: config.analysis.maxSegmentMatches,
+    clientRoutingConcurrency: config.analysis.clientRoutingConcurrency,
     notFoundScreenshotMaxDiff: config.analysis.notFoundScreenshotMaxDiff,
   },
 });

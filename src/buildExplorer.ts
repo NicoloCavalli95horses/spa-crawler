@@ -104,6 +104,7 @@ export function buildExplorer(
       dbPath: cfg.db.path, userDataDir: cfg.userDataDir, reportsDir: cfg.analysis.reportsDir,
       clientRoutingProbe: cfg.analysis.clientRoutingProbe,
       maxSegmentMatches: cfg.analysis.maxSegmentMatches,
+      clientRoutingConcurrency: cfg.analysis.clientRoutingConcurrency,
       notFoundScreenshotMaxDiff: cfg.analysis.notFoundScreenshotMaxDiff,
     },
   });

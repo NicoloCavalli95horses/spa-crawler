@@ -22,7 +22,7 @@ import { AuthzClassifier } from './analysis/authzClassifier';
 import { openDatabase } from './db/openDatabase';
 import type { ObservabilityDeps } from './buildExplorer';
 
-/** Margin beyond the exploration budget: final capture and graph saving. */
+/** Margin on top of the exploration + analysis budgets: final capture and graph saving. */
 const HANDLER_MARGIN_SECS = 120;
 
 // Crawlee only treats availableMemoryRatio of system RAM as its budget (default 0.25) and warns
@@ -120,7 +120,12 @@ export function createCrawler(cfg: CrawlConfig = defaultConfig): PlaywrightCrawl
   return new PlaywrightCrawler({
     // each site has its own page (more tabs with tabsPerSite) and its own explorer: sites can run in parallel
     maxConcurrency: cfg.concurrency,
-    requestHandlerTimeoutSecs: cfg.debugNoCrawling ? 24 * 3600 : cfg.maxDurationSecs + HANDLER_MARGIN_SECS,
+    // The single request handler runs BOTH exploration and the end-of-crawl analysis, which can be as
+    // slow as the exploration itself (serialized client-routing probes + screenshots over many
+    // candidates). maxDurationSecs is a per-phase budget, so the handler must allow for both phases —
+    // sizing it to maxDurationSecs alone used to kill a long analysis mid-run (exploration finished,
+    // analysis then ran past the budget and the request was marked failed).
+    requestHandlerTimeoutSecs: cfg.debugNoCrawling ? 24 * 3600 : 2 * cfg.maxDurationSecs + HANDLER_MARGIN_SECS,
     // the exploration lives in a single request: a retry would start from scratch, duplicating states
     maxRequestRetries: 0,
     // an isolated context per page: cookies and tabs kept separate between sites

@@ -38,7 +38,7 @@ export interface CrawlConfig {
   maxDepth: number;
   maxStates: number;            // cap on the states saved by each tab: guarantees termination
   restoreAttempts: number;      // times a (state,element) pair is retried across landings before being given up as unreachable: absorbs intermittent interstitials without pruning a whole branch (see StateStoreOptions.restoreAttempts)
-  maxDurationSecs: number;      // time budget per site: then the exploration shuts down on its own
+  maxDurationSecs: number;      // per-PHASE time budget per site: the exploration shuts down on its own after this, and the end-of-crawl analysis is allowed the same budget again (the request handler is sized for both — see main.ts requestHandlerTimeoutSecs)
   concurrency: number;          // sites explored in parallel
   tabsPerSite: number;          // tabs exploring the same site together (same context: shared cookies and storage)
   restoreDelayMs: number;       // minimum gap between two reloads of the same site (all tabs together)
@@ -68,16 +68,24 @@ export interface CrawlConfig {
   analysis: {
     maxConcurrentRequests: number; // bounds forged-request concurrency; mirrors RAPIDOR's config.js maxConcurrentRequests
     timeBetweenRequestsMs: number; // pacing after each forged request; mirrors RAPIDOR's config.js timeBetweenRequests
+    // how many pages the client-routing phase probes on in parallel. Each candidate's pushState probe
+    // + not-found screenshot mutate a page's live DOM, so they used to serialize on one shared page —
+    // the dominant cost of a large analysis. A pool of this many pages (same authenticated context,
+    // shared cookies) runs that many probes at once; near-linear speedup on that phase. Bounded: each
+    // page is a real tab doing navigations/screenshots (RAM/CPU) and parallel probes mean more
+    // concurrent traffic to the site, so this is deliberately modest, not maxed out.
+    clientRoutingConcurrency: number;
     reportsDir: string;            // where each flagged finding's reproduction script lands: <reportsDir>/<site>/<findingId>.repro.ts
     // window the client-side-routing probe (checkClientSideRouting/checkClientSideRoutingForPath)
-    // waits for a DOM mutation after a synthetic pushState+popstate. Was hardcoded at 500/100ms —
-    // far shorter than the rest of the pipeline's own settle windows (stability.timeoutMs: 10s,
-    // the extension's own wait-to-action: 3-8s, see config.extension.calls below), so an SPA route
-    // change that triggers a real network fetch (e.g. a lazily-loaded exercise/resource) could
-    // consistently read as "did not react", producing a false negative on every attempt rather
-    // than a flaky one. Sized closer to those windows so a genuinely slow-but-real re-render is
-    // still caught; still bounded so a route that truly ignores the segment doesn't stall analysis.
-    clientRoutingProbe: { minWaitMs: number; idleMs: number };
+    // waits for a DOM mutation after a synthetic pushState+popstate. Three bounds (see
+    // WAIT_DOM_IDLE_SRC in clientRouting.ts): `minWaitMs` is the floor (earliest a reaction may be
+    // reported settled — gives a router redirect / multi-burst render time to manifest), `idleMs` is
+    // the DOM-quiet settle, `maxWaitMs` is the ceiling. The ceiling guarantees termination on a page
+    // that never goes quiet AND keeps watching for a FIRST mutation past the floor, so a render gated
+    // on a slow network fetch (e.g. a lazily-loaded exercise/resource) is still caught instead of
+    // reading as "did not react" the moment the floor elapses. A route that truly ignores the segment
+    // rides to the ceiling and reports no reaction, so analysis never stalls.
+    clientRoutingProbe: { minWaitMs: number; idleMs: number; maxWaitMs: number };
     // Ablation study: runs a second, independent analysis pass (AblationPipeline) alongside the
     // main one, candidate-generating ONLY from the JSON bodies of already-captured HTTP responses
     // -- no React state, no component siblings, no client-routing probes at all. Its findings land
@@ -110,13 +118,13 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   startUrl: process.env.START_URL || 'http://localhost:3000',
   // START_URLS="https://a.com,https://b.com" (comma and/or newline separated, quoted in .env if on several lines), or fill the array here: replaces startUrl in `npm start`
   startUrls: (process.env.START_URLS || '').split(/[\s,]+/).filter(Boolean),
-  maxDepth: 3,
+  maxDepth: process.env.MAX_DEPTH ? Number(process.env.MAX_DEPTH) : 3, // MAX_DEPTH=2 for a quick, shallow debug run
   maxStates: 500,
   // a landing page's interstitial (cookie/"welcome back" sheet) can appear on one reload and not the
   // next, covering the target: retry a missed (state,element) a few times across landings before
   // giving up, so one unlucky reload never prunes a whole branch
   restoreAttempts: 4,
-  maxDurationSecs: 1800, // 30min
+  maxDurationSecs: 2700, // 45min per phase (exploration, then analysis)
   concurrency: 1,
   tabsPerSite: 10,
   restoreDelayMs: 200,
@@ -151,8 +159,9 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
   analysis: {
     maxConcurrentRequests: 3,
     timeBetweenRequestsMs: 250,
+    clientRoutingConcurrency: 5,
     reportsDir: 'reports',
-    clientRoutingProbe: { minWaitMs: 3_000, idleMs: 300 },
+    clientRoutingProbe: { minWaitMs: 1_000, idleMs: 300, maxWaitMs: 2_500 },
     // ABLATION_MODE=true npm start to turn it on from the shell instead of editing this file
     ablationMode: process.env.ABLATION_MODE === 'true',
     // a value in more than this many preindexed nodes is a generic keyword, not an identifier: skipped

@@ -39,7 +39,7 @@ export interface ReproductionInput {
   userDataDir?: string;
   reportsDir: string;
   kind: ReproductionKind;
-  clientRoutingProbe: { minWaitMs: number; idleMs: number };  // embedded verbatim so a re-run of this script tests the exact same window the original run used
+  clientRoutingProbe: { minWaitMs: number; idleMs: number; maxWaitMs: number };  // embedded verbatim so a re-run of this script tests the exact same window the original run used
 }
 
 /** JS literal, not JSON.stringify: keeps `undefined` as `undefined` rather than dropping the key silently. */
@@ -116,10 +116,10 @@ function reproductionBody(input: ReproductionInput): string {
   const paramName = isQuery ? kind.paramName : '';
   const probeSetup = isQuery ? `await installParamUsageTracking(page); // init script: must run before the first navigation` : '';
   const probeImport = isQuery ? `const { installParamUsageTracking } = await import('../../src/browser/paramUsageTracker');` : '';
-  const { minWaitMs, idleMs } = input.clientRoutingProbe;
+  const { minWaitMs, idleMs, maxWaitMs } = input.clientRoutingProbe;
   const probe = isQuery
-    ? `checkClientSideRouting({ page, paramName: ${literal(paramName)}, paramValue: CANDIDATE_VALUE, minWaitMs: ${minWaitMs}, idleMs: ${idleMs} })`
-    : `checkClientSideRoutingForPath({ page, targetUrl: CANDIDATE_URL, minWaitMs: ${minWaitMs}, idleMs: ${idleMs} })`;
+    ? `checkClientSideRouting({ page, paramName: ${literal(paramName)}, paramValue: CANDIDATE_VALUE, minWaitMs: ${minWaitMs}, idleMs: ${idleMs}, maxWaitMs: ${maxWaitMs} })`
+    : `checkClientSideRoutingForPath({ page, targetUrl: CANDIDATE_URL, minWaitMs: ${minWaitMs}, idleMs: ${idleMs}, maxWaitMs: ${maxWaitMs} })`;
 
   return `
   const { checkClientSideRouting, checkClientSideRoutingForPath } = await import('../../src/analysis/clientRouting');

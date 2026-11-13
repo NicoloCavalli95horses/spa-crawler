@@ -7,27 +7,53 @@ export interface ProbeRequest {
 }
 
 export interface ClientRoutingResult {
+  // Composite kept for callers that want the old single flag (reproduction scripts, the flakiness
+  // diagnostic): the app read the param (query only) AND rendered the candidate route AND stayed on
+  // it. The pipeline no longer gates on this — it weighs the raw signals below so a param honoured
+  // purely client-side, with no observable param read, is still a finding (see AnalysisPipeline's
+  // clientSideConfirmed).
   isUsingNewParams: boolean;
   hasMutatedDom: boolean;
+  // Query probe only: the app actually read the swapped param through URLSearchParams.get (hooked by
+  // installParamUsageTracking). Strong corroboration that the SPA consumed the mutated value — but
+  // not required, since an app may parse the query string in a way the hook does not see. Always
+  // false for the path probe (no equivalent signal exists for a path segment).
+  appReadParam: boolean;
+  // The browser is still on the candidate's OWN route once the DOM settled (not redirected away to a
+  // fallback). This is the primary "the app digested the swap" signal, paired with hasMutatedDom.
+  stayedOnRoute: boolean;
   // window.location.href right after the idle wait, before the probe rolls the URL back. Lets a
   // caller tell "the app rendered the candidate" apart from "the app's router rejected the candidate
-  // and redirected elsewhere" — both mutate the DOM, but only the first is evidence of anything. See
-  // isUsingNewParams's own redirect guard below for why this matters.
+  // and redirected elsewhere" — both mutate the DOM, but only the first is evidence of anything.
   finalUrl: string;
-  // Requests whose URL carries the candidate value, fired by the app WHILE the probe rendered the
-  // candidate route (network "ground truth"): a 403/404 here means the app asked the backend for the
-  // candidate resource and was denied / told it does not exist, so the route "rendering" is just an
-  // error page, not unauthorized access. Empty when nothing matching was observed (a purely
-  // client-routed page, or a probe run without a watch value).
+  // Requests whose URL CARRIES the candidate value as a whole path segment or whole query-param value
+  // (boundary match, not substring — so "298" never matches the customer id "6140298"), fired by the
+  // app WHILE the probe rendered the candidate route. A 2xx here corroborates that the app fetched and
+  // served the candidate resource. Empty when nothing matching was observed (a purely client-routed
+  // page, or a probe run without a watch value).
   probeRequests: ProbeRequest[];
 }
 
 /**
- * Shared browser-side helper, inlined into both probes below: waits until the DOM has been quiet
- * for `idleTime` ms (but at least `minWait` ms have elapsed), tracking whether any mutation
- * happened at all. The MutationObserver is attached synchronously, before the caller dispatches the
- * popstate event that may trigger a router's (usually synchronous, for non-React routers) DOM
- * update — attaching it after dispatchEvent would miss exactly that common case.
+ * Shared browser-side helper, inlined into both probes below. Watches the DOM after a synthetic
+ * route change and resolves with whether anything mutated, with three windows:
+ *
+ * - `minWait` (floor): the earliest a reaction may be reported settled. A route that renders in
+ *   bursts, or a router that redirects an unrecognized path to its fallback, needs a little time to
+ *   fully manifest before `finalUrl`/the mutation flag are read; the floor guarantees that.
+ * - `idleTime` (settle): once a mutation has happened, resolve after the DOM has been quiet this long.
+ * - `maxWait` (ceiling): an absolute stop. It does two things the old floor-only loop could not:
+ *     (1) it guarantees termination even on a page that never goes quiet (a persistent spinner or
+ *         polling that mutates faster than `idleTime` — the old loop would have waited forever), and
+ *     (2) it keeps watching for a FIRST mutation past the floor. A route whose render is gated on a
+ *         slow network fetch can start mutating only after `minWait`; the old code gave up exactly at
+ *         the floor and reported "no reaction", a false negative. Here, nothing is reported settled
+ *         until something has actually mutated, so such a late first render is still caught (up to the
+ *         ceiling); a route that genuinely never reacts simply rides to `maxWait` and reports false.
+ *
+ * The MutationObserver is attached synchronously, before the caller dispatches the popstate event
+ * that may trigger a router's (usually synchronous, for non-React routers) DOM update — attaching it
+ * after dispatchEvent would miss exactly that common case.
  *
  * A hand-written JS source string, not a TS function literal passed to page.evaluate(): tsx/esbuild's
  * name-preservation transform injects `__name(...)` helper calls into compiled functions, and once
@@ -36,7 +62,7 @@ export interface ClientRoutingResult {
  * gets instrumented inside it.
  */
 const WAIT_DOM_IDLE_SRC = `
-  function waitDomIdle(minWait, idleTime) {
+  function waitDomIdle(minWait, idleTime, maxWait) {
     return new Promise((resolve) => {
       let hasMutatedDom = false;
       let lastChange = Date.now();
@@ -48,9 +74,13 @@ const WAIT_DOM_IDLE_SRC = `
       observer.observe(document.body, { childList: true, subtree: true, attributes: true });
       function check() {
         const now = Date.now();
-        if (now - start >= minWait && now - lastChange >= idleTime) {
+        const elapsed = now - start;
+        if (elapsed >= maxWait) {
           observer.disconnect();
           resolve(hasMutatedDom);
+        } else if (hasMutatedDom && elapsed >= minWait && now - lastChange >= idleTime) {
+          observer.disconnect();
+          resolve(true);
         } else {
           requestAnimationFrame(check);
         }
@@ -70,12 +100,13 @@ const WAIT_DOM_IDLE_SRC = `
  * back, even on an unexpected error. Requires `installParamUsageTracking` to have already run on
  * `page` (an init script, so it is in place before any app code loads).
  *
- * `minWaitMs`/`idleMs` size the waitDomIdle window: AnalysisPipeline passes config.analysis.
- * clientRoutingProbe explicitly, sized to match the rest of the pipeline's own settle windows rather
- * than the much shorter 500/100ms this used to hardcode — see that config field's own comment.
- * Optional here (defaulting to that same config value) only so standalone scripts and previously
- * generated reproduction scripts that call this directly, without threading the config through,
- * keep compiling and behave the same as a real pipeline run.
+ * `minWaitMs`/`idleMs`/`maxWaitMs` size the waitDomIdle window (floor / settle / ceiling — see
+ * WAIT_DOM_IDLE_SRC's own doc comment): AnalysisPipeline passes config.analysis.clientRoutingProbe
+ * explicitly, sized to match the rest of the pipeline's own settle windows rather than the much
+ * shorter 500/100ms this used to hardcode — see that config field's own comment. Optional here
+ * (defaulting to that same config value) only so standalone scripts and previously generated
+ * reproduction scripts that call this directly, without threading the config through, keep compiling
+ * and behave the same as a real pipeline run.
  *
  * `isUsingNewParams` also requires the browser to still be sitting on `testUrl`'s own pathname once
  * the DOM settles: a false positive observed on busuu (dashboard/review -> dashboard/dashboard,
@@ -84,8 +115,8 @@ const WAIT_DOM_IDLE_SRC = `
  * candidate was REJECTED, not accepted. Without this guard that redirect reads identically to a
  * genuine "the app rendered the candidate's content".
  */
-export async function checkClientSideRouting({ page, paramName, paramValue, minWaitMs = 3_000, idleMs = 300 }: {
-  page: Page; paramName: string; paramValue: string; minWaitMs?: number; idleMs?: number;
+export async function checkClientSideRouting({ page, paramName, paramValue, minWaitMs = 1_000, idleMs = 300, maxWaitMs = 2_500 }: {
+  page: Page; paramName: string; paramValue: string; minWaitMs?: number; idleMs?: number; maxWaitMs?: number;
 }): Promise<ClientRoutingResult> {
   const script = `(async () => {
     const paramName = ${JSON.stringify(paramName)};
@@ -104,7 +135,7 @@ export async function checkClientSideRouting({ page, paramName, paramValue, minW
     try {
       window.history.pushState({ ignore: true }, '', testUrl);
       // started BEFORE dispatchEvent: see WAIT_DOM_IDLE_SRC's doc comment above.
-      const idle = waitDomIdle(${minWaitMs}, ${idleMs});
+      const idle = waitDomIdle(${minWaitMs}, ${idleMs}, ${maxWaitMs});
       window.dispatchEvent(new Event('popstate'));
       hasMutatedDom = await idle;
       finalUrl = window.location.href; // read before the rollback below moves it back
@@ -114,11 +145,14 @@ export async function checkClientSideRouting({ page, paramName, paramValue, minW
     }
 
     const stayedOnTestPath = new URL(finalUrl).pathname === testUrl.pathname;
+    const appReadParam = Boolean(w.__accessedParams && w.__accessedParams.has(paramName));
 
     return {
       hasMutatedDom: hasMutatedDom,
       finalUrl: finalUrl,
-      isUsingNewParams: Boolean(w.__accessedParams && w.__accessedParams.has(paramName)) && hasMutatedDom && stayedOnTestPath,
+      appReadParam: appReadParam,
+      stayedOnRoute: stayedOnTestPath,
+      isUsingNewParams: appReadParam && hasMutatedDom && stayedOnTestPath,
     };
   })()`;
 
@@ -147,8 +181,8 @@ export async function checkClientSideRouting({ page, paramName, paramValue, minW
  * segment at all, so hasMutatedDom used to be the ENTIRE signal — any redirect-away looked identical
  * to a genuine accept.
  */
-export async function checkClientSideRoutingForPath({ page, targetUrl, candidateValue, minWaitMs = 3_000, idleMs = 300 }: {
-  page: Page; targetUrl: string; candidateValue?: string; minWaitMs?: number; idleMs?: number;
+export async function checkClientSideRoutingForPath({ page, targetUrl, candidateValue, minWaitMs = 1_000, idleMs = 300, maxWaitMs = 2_500 }: {
+  page: Page; targetUrl: string; candidateValue?: string; minWaitMs?: number; idleMs?: number; maxWaitMs?: number;
 }): Promise<ClientRoutingResult> {
   const script = `(async () => {
     const targetUrl = ${JSON.stringify(targetUrl)};
@@ -161,7 +195,7 @@ export async function checkClientSideRoutingForPath({ page, targetUrl, candidate
     try {
       window.history.pushState({ ignore: true }, '', targetUrl);
       // started BEFORE dispatchEvent: see WAIT_DOM_IDLE_SRC's doc comment above.
-      const idle = waitDomIdle(${minWaitMs}, ${idleMs});
+      const idle = waitDomIdle(${minWaitMs}, ${idleMs}, ${maxWaitMs});
       window.dispatchEvent(new Event('popstate'));
       hasMutatedDom = await idle;
       finalUrl = window.location.href; // read before the rollback below moves it back
@@ -172,7 +206,13 @@ export async function checkClientSideRoutingForPath({ page, targetUrl, candidate
 
     const stayedOnTargetPath = new URL(finalUrl).pathname === new URL(targetUrl).pathname;
 
-    return { hasMutatedDom: hasMutatedDom, finalUrl: finalUrl, isUsingNewParams: hasMutatedDom && stayedOnTargetPath };
+    return {
+      hasMutatedDom: hasMutatedDom,
+      finalUrl: finalUrl,
+      appReadParam: false,
+      stayedOnRoute: stayedOnTargetPath,
+      isUsingNewParams: hasMutatedDom && stayedOnTargetPath,
+    };
   })()`;
 
   // candidateValue is the swapped path segment: a response URL carrying it is the app's own fetch
@@ -203,7 +243,7 @@ async function evaluateProbe({ page, script, watchValue }: {
     ? (response: Response) => {
         try {
           const url = response.url();
-          if (url.includes(watchValue)) probeRequests.push({ url, status: response.status() });
+          if (urlCarriesValue(url, watchValue)) probeRequests.push({ url, status: response.status() });
         } catch { /* response object went away with a navigation */ }
       }
     : undefined;
@@ -212,9 +252,28 @@ async function evaluateProbe({ page, script, watchValue }: {
     const result = await (page.evaluate(script) as Promise<Omit<ClientRoutingResult, 'probeRequests'>>);
     return { ...result, probeRequests };
   } catch {
-    return { hasMutatedDom: false, isUsingNewParams: false, finalUrl: safeUrl(page), probeRequests };
+    return { hasMutatedDom: false, isUsingNewParams: false, appReadParam: false, stayedOnRoute: false, finalUrl: safeUrl(page), probeRequests };
   } finally {
     if (onResponse) page.off('response', onResponse);
+  }
+}
+
+/**
+ * Does `url` carry `value` as a WHOLE path segment or a WHOLE query-param value — not as an arbitrary
+ * substring? A plain `url.includes(value)` falsely matches a short id inside a longer one (the real
+ * case that motivated this: candidate "298" matching the customer id "6140298" that rides along in
+ * every authenticated API call, producing a spurious network "confirm"). Matching only at segment /
+ * param-value boundaries attributes a network response to the candidate only when it genuinely
+ * targets that resource. Falls back to a substring test if the URL does not parse.
+ */
+export function urlCarriesValue(url: string, value: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.pathname.split('/').some((seg) => decodeURIComponent(seg) === value)) return true;
+    for (const v of u.searchParams.values()) if (v === value) return true;
+    return false;
+  } catch {
+    return url.includes(value);
   }
 }
 

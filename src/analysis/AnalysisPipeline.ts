@@ -15,6 +15,7 @@ import { getServerResponseSimilarity, compareObj, describeDiffs, type PropDiff }
 import { assessAuthZ, type AuthzClassifier } from './authzClassifier';
 import { checkClientSideRouting, checkClientSideRoutingForPath, type ClientRoutingResult } from './clientRouting';
 import { captureRouteScreenshot, screenshotDiffFraction, makeGarbageValue } from './routeScreenshot';
+import { installParamUsageTracking } from '../browser/paramUsageTracker';
 import { formatDuration } from '../core/duration';
 import { writeReproductionScript, type ReproductionKind } from './reproductionScript';
 
@@ -24,7 +25,8 @@ export interface AnalysisPipelineOptions {
   dbPath: string;          // so a generated reproduction script can re-read the exact React snapshot a finding came from
   userDataDir?: string;    // so it can reopen the same (authenticated, if persistent) browser profile
   reportsDir: string;      // reproduction scripts land in <reportsDir>/<site>/<findingId>.repro.ts
-  clientRoutingProbe: { minWaitMs: number; idleMs: number };  // see config.analysis.clientRoutingProbe's own comment
+  clientRoutingProbe: { minWaitMs: number; idleMs: number; maxWaitMs: number };  // see config.analysis.clientRoutingProbe's own comment
+  clientRoutingConcurrency: number; // pages the client-routing phase probes on in parallel (see config.analysis.clientRoutingConcurrency)
   maxSegmentMatches: number; // skip a URL segment whose value appears in more preindexed nodes than this: a generic keyword, not an identifier (see config.analysis.maxSegmentMatches)
   notFoundScreenshotMaxDiff: number; // a client-routing candidate whose rendered screenshot differs from the calibrated not-found page by no more than this fraction of pixels is the app's own not-found page, not a real resource — rejected (see config.analysis.notFoundScreenshotMaxDiff)
 }
@@ -53,19 +55,6 @@ const MAX_CLIENT_ROUTING_ATTEMPTS = 3;
 const CLIENT_ROUTING_RETRY_DELAY_MS = 250;
 
 /**
- * Network ground truth for a client-routing candidate: among the requests the app fired for the
- * candidate value while the probe rendered its route, was any answered with a client/forbidden/not-
- * found status (>= 400)? A 403 means the authorization control WORKED (correctly denied) and a 404
- * means the resource does not exist — neither is unauthorized access, so a route that "rendered"
- * only because of such a response is a false positive and must be rejected. No matching request
- * (empty) means the value is purely client-routed (no backend call carried it): inconclusive here,
- * left to the visual not-found baseline. A 2xx is the only thing that keeps the candidate alive.
- */
-function networkRejectsCandidate(probeRequests: { status: number }[]): boolean {
-  return probeRequests.length > 0 && probeRequests.some((r) => r.status >= 400);
-}
-
-/**
  * Server-side port of RAPIDOR's preindex -> matchFinder -> requestGenerator -> responseEvaluator
  * chain: for every captured HTTP event of a site, proposes an alternative segment value (from a
  * sibling component instance), forges the replacement request, and flags+persists a vulnerability
@@ -86,11 +75,41 @@ function networkRejectsCandidate(probeRequests: { status: number }[]): boolean {
  * Every count along the way (segments extracted, matches found, candidates found, requests
  * generated) is recorded to AnalysisStatsStore, one row per site, for later averaging.
  */
+
+/** Minimal counting semaphore: bounds how many `run`s are in flight at once (used for forged HTTP). */
+class Semaphore {
+  private permits: number;
+  private waiters: (() => void)[] = [];
+  constructor(permits: number) { this.permits = Math.max(1, permits); }
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.permits > 0) this.permits--;
+    else await new Promise<void>((resolve) => this.waiters.push(resolve));
+    try {
+      return await fn();
+    } finally {
+      const next = this.waiters.shift();
+      if (next) next();
+      else this.permits++;
+    }
+  }
+}
+
 export class AnalysisPipeline {
   // checkClientSideRouting mutates the shared page's live location/DOM; serialized so concurrent
   // candidate evaluations (bounded by maxConcurrentRequests) never race on it, mirroring RAPIDOR's
   // own enqueueNavigation() around the same operation.
-  private clientRoutingQueue: Promise<unknown> = Promise.resolve();
+  // Pool of pages the client-routing phase runs its probes/screenshots on, in parallel. Each probe
+  // mutates a page's live DOM (pushState) and screenshots it, so a probe owns a page exclusively while
+  // it runs; `freePages` are the idle ones and `pageWaiters` are tasks blocked waiting for one.
+  // `extraPages` are the pages this pipeline created from the caller's context (to close at the end);
+  // the caller's own page stays in the pool but is never closed here. Sized by clientRoutingConcurrency.
+  private freePages: Page[] = [];
+  private pageWaiters: ((page: Page) => void)[] = [];
+  private extraPages: Page[] = [];
+  // Bounds concurrent forged HTTP requests independently of the page pool (the forge uses
+  // page.request.fetch, which needs no page DOM, so it is not gated by the pool). Mirrors
+  // maxConcurrentRequests. Re-created per run.
+  private forgeSemaphore: Semaphore = new Semaphore(1);
 
   // Per-run cache of React graphs parsed from the DB. findUrlCandidates looks a state's graph up
   // once per preindex match (tens of thousands of times for a rich site), but there are only as
@@ -103,8 +122,10 @@ export class AnalysisPipeline {
   // Per-run cache of the app's "not found" screenshot for each route template (the candidate URL with
   // its id slot blanked out): calibrated once per template by rendering a garbage value, then reused
   // to recognize any candidate on that template whose render is just the not-found page. `undefined`
-  // means calibration was attempted but produced no usable shot, so don't keep retrying it.
-  private notFoundBaselines = new Map<string, Buffer | undefined>();
+  // means calibration was attempted but produced no usable shot, so don't keep retrying it. Holds the
+  // in-flight PROMISE, not the resolved buffer, so concurrent probes on the same template (now that
+  // the pool runs them in parallel) share one calibration instead of each rendering the garbage value.
+  private notFoundBaselines = new Map<string, Promise<Buffer | undefined>>();
 
   constructor(private deps: AnalysisPipelineDeps) {}
 
@@ -164,7 +185,7 @@ export class AnalysisPipeline {
           const key = `client|${pageUrl}|${paramName}|${candidate.candidateValue}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          tasks.push(() => this.evaluateClientRoutingCandidate({ page, site, pageUrl, paramName, candidateUrl: candidateUrl.href, candidate }));
+          tasks.push(() => this.evaluateClientRoutingCandidate({ site, pageUrl, paramName, candidateUrl: candidateUrl.href, candidate }));
         } else {
           // path segment of the page's own route (e.g. busuu's objective_<uuid>): no matching
           // http_event exists for it, so the only probe available is the page's own client-side
@@ -174,25 +195,34 @@ export class AnalysisPipeline {
           const key = `client|${pageUrl}|path|${candidateUrl}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          tasks.push(() => this.evaluateClientRoutingPathCandidate({ page, site, pageUrl, candidateUrl, candidate }));
+          tasks.push(() => this.evaluateClientRoutingPathCandidate({ site, pageUrl, candidateUrl, candidate }));
         }
       }
     }
 
     if (tasks.length > 0) {
-      log.info(`AnalysisPipeline: dispatching ${tasks.length} candidate request(s) for ${site}`);
-      // Isolate each candidate: one task throwing (a forged request erroring, a client-routing probe
-      // whose navigation destroys the page context, ...) must not reject the whole pool and abort the
-      // run — that would lose analysis_stats and every not-yet-dispatched candidate. A failure is
-      // logged and treated as "no finding", same as a candidate that was simply rejected.
-      const guarded = tasks.map((task) => async () => {
-        try {
-          await task();
-        } catch (err) {
-          log.warning(`AnalysisPipeline: candidate task failed (skipped): ${(err as Error).message}`);
-        }
-      });
-      await runWithConcurrency({ tasks: guarded, limit: options.maxConcurrentRequests });
+      const poolSize = Math.max(1, options.clientRoutingConcurrency);
+      log.info(`AnalysisPipeline: dispatching ${tasks.length} candidate request(s) for ${site} (${poolSize} client-routing page(s), ${options.maxConcurrentRequests} forge slot(s))`);
+      this.forgeSemaphore = new Semaphore(options.maxConcurrentRequests);
+      await this.setupPagePool({ page, size: poolSize });
+      try {
+        // Isolate each candidate: one task throwing (a forged request erroring, a client-routing probe
+        // whose navigation destroys the page context, ...) must not reject the whole pool and abort the
+        // run — that would lose analysis_stats and every not-yet-dispatched candidate. A failure is
+        // logged and treated as "no finding", same as a candidate that was simply rejected.
+        const guarded = tasks.map((task) => async () => {
+          try {
+            await task();
+          } catch (err) {
+            log.warning(`AnalysisPipeline: candidate task failed (skipped): ${(err as Error).message}`);
+          }
+        });
+        // Outer limit is the page-pool size: client-routing tasks are gated by the pool, forge-only
+        // tasks by forgeSemaphore, so letting this many run keeps the pool fed without over-forging.
+        await runWithConcurrency({ tasks: guarded, limit: Math.max(poolSize, options.maxConcurrentRequests) });
+      } finally {
+        await this.teardownPagePool();
+      }
     }
 
     const analysisMs = Date.now() - analysisStartedAt;
@@ -289,10 +319,13 @@ export class AnalysisPipeline {
   }): Promise<void> {
     const { vulnerabilityStore, classifier, forgedRequestStore, options } = this.deps;
 
-    const forged = await forgeRequestCached({
-      cache: forgedRequestStore, site, page, url, method: event.method, headers: event.requestHeaders, postData: event.postData,
+    const forged = await this.forgeSemaphore.run(async () => {
+      const res = await forgeRequestCached({
+        cache: forgedRequestStore, site, page, url, method: event.method, headers: event.requestHeaders, postData: event.postData,
+      });
+      await sleep(options.timeBetweenRequestsMs);
+      return res;
     });
-    await sleep(options.timeBetweenRequestsMs);
 
     const similarity = getServerResponseSimilarity(
       { status: event.status ?? 0, headers: event.responseHeaders ?? {}, body: event.responseBody ?? '', contentType: event.contentType },
@@ -316,21 +349,13 @@ export class AnalysisPipeline {
       const paramName = segment.paramName;
       const { clientRoutingProbe } = options;
       const clientRouting = await this.enqueueClientRoutingCheck({
-        page, pageUrl: event.pageUrl,
-        run: () => checkClientSideRouting({ page, paramName, paramValue: candidate.candidateValue, ...clientRoutingProbe }),
+        pageUrl: event.pageUrl,
+        run: (p) => checkClientSideRouting({ page: p, paramName, paramValue: candidate.candidateValue, ...clientRoutingProbe }),
       });
-      if (networkRejectsCandidate(clientRouting.probeRequests)) {
-        log.debug(`AnalysisPipeline: candidate rejected (backend ${describeProbeStatuses(clientRouting.probeRequests)}) — ${event.pageUrl} ?${paramName}=${candidate.candidateValue}`);
-        return;
-      }
-      if (!clientRouting.isUsingNewParams) {
-        log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${event.pageUrl} ?${paramName}=${candidate.candidateValue}`);
-        return;
-      }
       const clientCandidateUrl = withParam({ url: event.pageUrl, name: paramName, value: candidate.candidateValue });
-      if (!networkConfirmsCandidate(clientRouting.probeRequests)
-          && await this.looksLikeNotFound({ page, pageUrl: event.pageUrl, candidateUrl: clientCandidateUrl, candidateValue: candidate.candidateValue })) {
-        log.debug(`AnalysisPipeline: candidate rejected (renders the app's not-found page) — ${event.pageUrl} ?${paramName}=${candidate.candidateValue}`);
+      const reason = await this.clientSideConfirmed({ pageUrl: event.pageUrl, candidateUrl: clientCandidateUrl, candidateValue: candidate.candidateValue, clientRouting });
+      if (reason) {
+        log.debug(`AnalysisPipeline: candidate rejected (${reason}) — ${event.pageUrl} ?${paramName}=${candidate.candidateValue}`);
         return;
       }
       detectionMethod = 'client-routing';
@@ -369,28 +394,20 @@ export class AnalysisPipeline {
    * HTTP request): there is no server response to forge/compare, so this goes straight to the
    * live pushState+popstate probe, mirroring the client-routing tail of evaluateHttpCandidate.
    */
-  private async evaluateClientRoutingCandidate({ page, site, pageUrl, paramName, candidateUrl, candidate }: {
-    page: Page; site: string; pageUrl: string; paramName: string; candidateUrl: string;
+  private async evaluateClientRoutingCandidate({ site, pageUrl, paramName, candidateUrl, candidate }: {
+    site: string; pageUrl: string; paramName: string; candidateUrl: string;
     candidate: ReturnType<typeof findCandidates>[number];
   }): Promise<void> {
     const { vulnerabilityStore, classifier, options } = this.deps;
     const { clientRoutingProbe } = options;
 
     const clientRouting = await this.enqueueClientRoutingCheck({
-      page, pageUrl,
-      run: () => checkClientSideRouting({ page, paramName, paramValue: candidate.candidateValue, ...clientRoutingProbe }),
+      pageUrl,
+      run: (p) => checkClientSideRouting({ page: p, paramName, paramValue: candidate.candidateValue, ...clientRoutingProbe }),
     });
-    if (networkRejectsCandidate(clientRouting.probeRequests)) {
-      log.debug(`AnalysisPipeline: candidate rejected (backend ${describeProbeStatuses(clientRouting.probeRequests)}) — ${pageUrl} ?${paramName}=${candidate.candidateValue}`);
-      return;
-    }
-    if (!clientRouting.isUsingNewParams) {
-      log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${pageUrl} ?${paramName}=${candidate.candidateValue}`);
-      return;
-    }
-    if (!networkConfirmsCandidate(clientRouting.probeRequests)
-        && await this.looksLikeNotFound({ page, pageUrl, candidateUrl, candidateValue: candidate.candidateValue })) {
-      log.debug(`AnalysisPipeline: candidate rejected (renders the app's not-found page) — ${pageUrl} -> ${candidateUrl}`);
+    const reason = await this.clientSideConfirmed({ pageUrl, candidateUrl, candidateValue: candidate.candidateValue, clientRouting });
+    if (reason) {
+      log.debug(`AnalysisPipeline: candidate rejected (${reason}) — ${pageUrl} ?${paramName}=${candidate.candidateValue}`);
       return;
     }
 
@@ -429,28 +446,20 @@ export class AnalysisPipeline {
    * path shape, so there is nothing to forge/compare server-side): goes straight to
    * checkClientSideRoutingForPath, the path equivalent of the pushState+popstate probe above.
    */
-  private async evaluateClientRoutingPathCandidate({ page, site, pageUrl, candidateUrl, candidate }: {
-    page: Page; site: string; pageUrl: string; candidateUrl: string;
+  private async evaluateClientRoutingPathCandidate({ site, pageUrl, candidateUrl, candidate }: {
+    site: string; pageUrl: string; candidateUrl: string;
     candidate: ReturnType<typeof findCandidates>[number];
   }): Promise<void> {
     const { vulnerabilityStore, classifier, options } = this.deps;
     const { clientRoutingProbe } = options;
 
     const clientRouting = await this.enqueueClientRoutingCheck({
-      page, pageUrl,
-      run: () => checkClientSideRoutingForPath({ page, targetUrl: candidateUrl, candidateValue: candidate.candidateValue, ...clientRoutingProbe }),
+      pageUrl,
+      run: (p) => checkClientSideRoutingForPath({ page: p, targetUrl: candidateUrl, candidateValue: candidate.candidateValue, ...clientRoutingProbe }),
     });
-    if (networkRejectsCandidate(clientRouting.probeRequests)) {
-      log.debug(`AnalysisPipeline: candidate rejected (backend ${describeProbeStatuses(clientRouting.probeRequests)}) — ${pageUrl} -> ${candidateUrl}`);
-      return;
-    }
-    if (!clientRouting.isUsingNewParams) {
-      log.debug(`AnalysisPipeline: candidate rejected (${describeClientRoutingRejection(clientRouting)}) — ${pageUrl} -> ${candidateUrl}`);
-      return;
-    }
-    if (!networkConfirmsCandidate(clientRouting.probeRequests)
-        && await this.looksLikeNotFound({ page, pageUrl, candidateUrl, candidateValue: candidate.candidateValue })) {
-      log.debug(`AnalysisPipeline: candidate rejected (renders the app's not-found page) — ${pageUrl} -> ${candidateUrl}`);
+    const reason = await this.clientSideConfirmed({ pageUrl, candidateUrl, candidateValue: candidate.candidateValue, clientRouting });
+    if (reason) {
+      log.debug(`AnalysisPipeline: candidate rejected (${reason}) — ${pageUrl} -> ${candidateUrl}`);
       return;
     }
 
@@ -501,54 +510,115 @@ export class AnalysisPipeline {
   }
 
   /**
-   * Serializes checkClientSideRouting*'s shared page mutation (mirrors RAPIDOR's own
-   * enqueueNavigation()), and retries a negative result up to MAX_CLIENT_ROUTING_ATTEMPTS times.
-   *
-   * The probe itself (clientRouting.ts) fires its rollback pushState+popstate in a `finally` block
-   * without waiting for the resulting re-render to settle, so the Node-side promise can resolve
-   * before the browser has actually finished processing it. Queued back to back (as every
-   * candidate for the same page is here), the next probe can then start its own measurement window
-   * while that leftover render is still in flight — confirmed empirically (scripts/
-   * debugClientRoutingFlakiness.ts): running the same page's real candidate sequence repeatedly,
-   * *some* probe consistently misses in the first round or two (not always the same one — whichever
-   * lands in the polluted window), then settles to 100% reliable afterwards. A short, bounded retry
-   * costs nothing when the first attempt already succeeds and recovers almost every one of these
-   * transient misses otherwise — same "redundant capture beats a silent loss" tradeoff already made
-   * for react-state capture (see ReactStateStore.record()'s own comment).
+   * Builds the page pool for one analysis run: the caller's own page plus `size - 1` fresh pages from
+   * the SAME browser context (so they share the authenticated cookies), each with the param-usage init
+   * script installed (the query probe reads window.__accessedParams). All start free.
    */
-  private async enqueueClientRoutingCheck({ page, pageUrl, run }: {
-    page: Page; pageUrl: string; run: () => Promise<ClientRoutingResult>;
-  }): Promise<ClientRoutingResult> {
-    const result = this.clientRoutingQueue.then(async () => {
+  private async setupPagePool({ page, size }: { page: Page; size: number }): Promise<void> {
+    this.extraPages = [];
+    const pages: Page[] = [page];
+    for (let i = 1; i < size; i++) {
+      const extra = await page.context().newPage();
+      await installParamUsageTracking(extra);
+      this.extraPages.push(extra);
+      pages.push(extra);
+    }
+    this.freePages = pages;
+    this.pageWaiters = [];
+  }
+
+  /** Closes the pages this run created (never the caller's own page) and resets the pool. */
+  private async teardownPagePool(): Promise<void> {
+    const toClose = this.extraPages;
+    this.extraPages = [];
+    this.freePages = [];
+    this.pageWaiters = [];
+    for (const extra of toClose) await extra.close().catch(() => undefined);
+  }
+
+  /** Takes a free page, or waits until one is released. */
+  private acquirePage(): Promise<Page> {
+    const free = this.freePages.pop();
+    if (free) return Promise.resolve(free);
+    return new Promise<Page>((resolve) => this.pageWaiters.push(resolve));
+  }
+
+  /** Returns a page to the pool, handing it straight to the next waiter if there is one. */
+  private releasePage(page: Page): void {
+    const waiter = this.pageWaiters.shift();
+    if (waiter) waiter(page);
+    else this.freePages.push(page);
+  }
+
+  /** Runs `run` on an exclusively-held pool page, navigated to `pageUrl` first; always releases it. */
+  private async withPooledPage<T>({ pageUrl, run }: { pageUrl: string; run: (page: Page) => Promise<T> }): Promise<T> {
+    const page = await this.acquirePage();
+    try {
       if (page.url() !== pageUrl) {
         await page.goto(pageUrl, { waitUntil: 'load', timeout: 10_000 }).catch(() => undefined);
       }
-      let attempt: ClientRoutingResult = { hasMutatedDom: false, isUsingNewParams: false, finalUrl: pageUrl, probeRequests: [] };
-      for (let i = 0; i < MAX_CLIENT_ROUTING_ATTEMPTS; i++) {
-        attempt = await run();
-        if (attempt.isUsingNewParams) return attempt;
-        if (i < MAX_CLIENT_ROUTING_ATTEMPTS - 1) await sleep(CLIENT_ROUTING_RETRY_DELAY_MS);
-      }
-      return attempt; // every attempt came back negative: a genuine "no", not a retry left on the table
-    });
-    this.clientRoutingQueue = result.catch(() => undefined);
-    return result;
+      return await run(page);
+    } finally {
+      this.releasePage(page);
+    }
   }
 
   /**
-   * Serializes a single page-mutating capture on the SAME queue as the probes (no retry loop), so a
-   * screenshot never renders while a probe is mid-mutation on the shared page. Re-navigates to
-   * `pageUrl` first if the page drifted, exactly like enqueueClientRoutingCheck.
+   * Runs checkClientSideRouting* on a pool page (parallel across candidates, exclusive per page), and
+   * retries a negative result up to MAX_CLIENT_ROUTING_ATTEMPTS times.
+   *
+   * The probe itself (clientRouting.ts) fires its rollback pushState+popstate in a `finally` block
+   * without waiting for the resulting re-render to settle, so the Node-side promise can resolve
+   * before the browser has actually finished processing it; a second probe starting on the SAME page
+   * while that leftover render is still in flight can land in the polluted window and miss — confirmed
+   * empirically (scripts/debugClientRoutingFlakiness.ts): *some* probe consistently misses in the
+   * first round or two, then settles to 100% reliable afterwards. A short, bounded retry costs nothing
+   * when the first attempt already succeeds and recovers almost every one of these transient misses
+   * otherwise — same "redundant capture beats a silent loss" tradeoff already made for react-state
+   * capture (see ReactStateStore.record()'s own comment). The retry loop stays on one page, so the
+   * rollback it is guarding against is always this candidate's own, never another candidate's.
    */
-  private enqueueCapture<T>({ page, pageUrl, run }: { page: Page; pageUrl: string; run: () => Promise<T> }): Promise<T> {
-    const result = this.clientRoutingQueue.then(async () => {
-      if (page.url() !== pageUrl) {
-        await page.goto(pageUrl, { waitUntil: 'load', timeout: 10_000 }).catch(() => undefined);
+  private enqueueClientRoutingCheck({ pageUrl, run }: {
+    pageUrl: string; run: (page: Page) => Promise<ClientRoutingResult>;
+  }): Promise<ClientRoutingResult> {
+    return this.withPooledPage({ pageUrl, run: async (page) => {
+      let attempt: ClientRoutingResult = { hasMutatedDom: false, isUsingNewParams: false, appReadParam: false, stayedOnRoute: false, finalUrl: pageUrl, probeRequests: [] };
+      for (let i = 0; i < MAX_CLIENT_ROUTING_ATTEMPTS; i++) {
+        attempt = await run(page);
+        // A decisive positive ends the retries: the app rendered the candidate's OWN route (client
+        // digestion), or the backend answered its fetch with a 2xx. The final accept/reject (incl. the
+        // not-found guard) is decided later in clientSideConfirmed.
+        if ((attempt.hasMutatedDom && attempt.stayedOnRoute) || networkConfirmsCandidate(attempt.probeRequests)) return attempt;
+        if (i < MAX_CLIENT_ROUTING_ATTEMPTS - 1) await sleep(CLIENT_ROUTING_RETRY_DELAY_MS);
       }
-      return run();
-    });
-    this.clientRoutingQueue = result.catch(() => undefined);
-    return result;
+      return attempt; // every attempt came back negative: a genuine "no", not a retry left on the table
+    } });
+  }
+
+  /**
+   * Decides whether a client-routing probe is evidence of an access-control issue. The primary signal
+   * is CLIENT DIGESTION — the SPA rendered the candidate's own route and stayed on it (`hasMutatedDom
+   * && stayedOnRoute`); a query param (or path segment) honoured entirely client-side, with no network
+   * traffic at all, is a real finding, so the network is a filter here, never a veto (RAPIDOR's whole
+   * point for this fallback: confirm the app consumed the mutated value). When the app provably read
+   * the param (`appReadParam`) or the backend answered the candidate's own fetch with a `2xx`, that is
+   * corroboration strong enough to accept directly. Otherwise the only thing that can still reject it
+   * is the visual not-found baseline — the app rendering its generic not-found page for every id. A
+   * `4xx` on an incidental request no longer rejects on its own: a route that renders a real, distinct
+   * page (not the not-found one) is a client-side finding regardless of what some request returned.
+   * Returns a rejection reason (for the debug log) or null to accept.
+   */
+  private async clientSideConfirmed({ pageUrl, candidateUrl, candidateValue, clientRouting }: {
+    pageUrl: string; candidateUrl: string; candidateValue: string; clientRouting: ClientRoutingResult;
+  }): Promise<string | null> {
+    if (!(clientRouting.hasMutatedDom && clientRouting.stayedOnRoute)) {
+      return describeClientRoutingRejection(clientRouting);
+    }
+    const corroborated = clientRouting.appReadParam || networkConfirmsCandidate(clientRouting.probeRequests);
+    if (!corroborated && await this.looksLikeNotFound({ pageUrl, candidateUrl, candidateValue })) {
+      return "renders the app's not-found page";
+    }
+    return null;
   }
 
   /**
@@ -560,20 +630,26 @@ export class AnalysisPipeline {
    * so it is rejected. Returns false (keep the candidate) whenever it cannot decide: calibration or
    * capture produced no shot, or the two could not be diffed.
    */
-  private async looksLikeNotFound({ page, pageUrl, candidateUrl, candidateValue }: {
-    page: Page; pageUrl: string; candidateUrl: string; candidateValue: string;
+  private async looksLikeNotFound({ pageUrl, candidateUrl, candidateValue }: {
+    pageUrl: string; candidateUrl: string; candidateValue: string;
   }): Promise<boolean> {
-    const settleMs = this.deps.options.clientRoutingProbe.minWaitMs;
+    // Use the probe's ceiling, not its floor: a screenshot wants the fully-settled render of the
+    // route, so give it the most generous window (the floor only bounds how early the DOM probe may
+    // report a reaction, which is not what a visual baseline needs).
+    const settleMs = this.deps.options.clientRoutingProbe.maxWaitMs;
     const template = candidateUrl.split(candidateValue).join('\u0000');   // id slot blanked out
-    if (!this.notFoundBaselines.has(template)) {
+    // Calibrate once per template, deduping concurrent probes: store the in-flight promise so parallel
+    // candidates on the same template await the same garbage-value render instead of each doing one.
+    let calibration = this.notFoundBaselines.get(template);
+    if (!calibration) {
       const garbageUrl = candidateUrl.split(candidateValue).join(makeGarbageValue(candidateValue));
-      const calibrated = await this.enqueueCapture({ page, pageUrl, run: () => captureRouteScreenshot({ page, testUrl: garbageUrl, settleMs }) });
-      this.notFoundBaselines.set(template, calibrated);
+      calibration = this.withPooledPage({ pageUrl, run: (page) => captureRouteScreenshot({ page, testUrl: garbageUrl, settleMs }) });
+      this.notFoundBaselines.set(template, calibration);
     }
-    const baseline = this.notFoundBaselines.get(template);
+    const baseline = await calibration;
     if (!baseline) return false;
 
-    const candidateShot = await this.enqueueCapture({ page, pageUrl, run: () => captureRouteScreenshot({ page, testUrl: candidateUrl, settleMs }) });
+    const candidateShot = await this.withPooledPage({ pageUrl, run: (page) => captureRouteScreenshot({ page, testUrl: candidateUrl, settleMs }) });
     if (!candidateShot) return false;
 
     const frac = await screenshotDiffFraction({ a: candidateShot, b: baseline });
@@ -652,10 +728,4 @@ function describeClientRoutingRejection(result: ClientRoutingResult): string {
   return result.hasMutatedDom
     ? `DOM mutated but the app redirected away to ${result.finalUrl}`
     : 'no client-side DOM reaction';
-}
-
-/** Compact "denied/not-found 403,404" summary of the candidate's own backend responses, for the log. */
-function describeProbeStatuses(probeRequests: { status: number }[]): string {
-  const statuses = [...new Set(probeRequests.map((r) => r.status))].sort((a, b) => a - b).join(',');
-  return `answered the candidate fetch with ${statuses}`;
 }

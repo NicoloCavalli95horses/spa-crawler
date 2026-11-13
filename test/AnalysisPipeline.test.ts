@@ -52,8 +52,9 @@ describe('AnalysisPipeline: client-side-only query params', () => {
       options: {
         maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports'),
         // test pages react near-instantly: a short window keeps the suite fast without masking a real miss
-        clientRoutingProbe: { minWaitMs: 300, idleMs: 50 },
+        clientRoutingProbe: { minWaitMs: 300, idleMs: 50, maxWaitMs: 500 },
         maxSegmentMatches: 300,
+        clientRoutingConcurrency: 1,
         notFoundScreenshotMaxDiff: 0.02,
       },
     });
@@ -184,8 +185,9 @@ describe('AnalysisPipeline: client-side-only path segments', () => {
       httpEventStore, preindexStore, reactStateStore, crawlStateStore, vulnerabilityStore, statsStore, forgedRequestStore, classifier,
       options: {
         maxConcurrentRequests: 1, timeBetweenRequestsMs: 0, dbPath, reportsDir: join(root, 'reports'),
-        clientRoutingProbe: { minWaitMs: 300, idleMs: 50 },
+        clientRoutingProbe: { minWaitMs: 300, idleMs: 50, maxWaitMs: 500 },
         maxSegmentMatches: 300,
+        clientRoutingConcurrency: 1,
         notFoundScreenshotMaxDiff: 0.02,
       },
     });
