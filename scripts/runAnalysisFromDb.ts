@@ -28,7 +28,7 @@ import { AnalysisPipeline } from '../src/analysis/AnalysisPipeline';
 import { installParamUsageTracking } from '../src/browser/paramUsageTracker';
 import { config } from '../src/config';
 
-log.setLevel(LogLevel.INFO);
+log.setLevel(process.env.LOG_LEVEL?.toLowerCase() === 'debug' ? LogLevel.DEBUG : LogLevel.INFO);
 
 const START_URL = process.argv[2] ?? process.env.START_URL;
 if (!START_URL) {

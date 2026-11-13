@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-13 11:39 — runAnalysisFromDb: `LOG_LEVEL=debug` to see per-candidate decisions
+`scripts/runAnalysisFromDb.ts` now honors `LOG_LEVEL` (`debug` turns on crawlee's DEBUG level, otherwise INFO), so a re-run on already-captured data logs why each candidate was accepted or rejected — the per-candidate "rejected (...)" / "potential access control issue" lines. Useful for diagnosing whether a filter (network truth, not-found screenshot, authz relevance, client-routing flakiness) is responsible for an unexpected count.
+
 ## 2026-11-13 11:23 — Client-routing false-positive guards: network truth + not-found screenshot baseline
 A client-routing candidate is now flagged only when its route resolves to a real, distinct resource, not to an error page or the app's own not-found page. Two independent guards decide this, both scoped to client-side findings (an HTTP/JSON finding already has the server-response oracle):
 
