@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-13 16:10 — Version the authz classifier's persisted cache
+The classifier's word-split + "whether" framing lifted `available` to 0.405 in-memory, but a re-run still flagged nothing on lingualeo: `authz_classifications` already held `available` at its pre-split 0.234 from an earlier run, and a single-word key normalizes to itself, so the stale row was read straight back. The persisted store key now carries a `CLASSIFIER_VERSION` prefix — changing the normalization/embedding bumps it, bypassing every row a previous version wrote; the in-memory (per-process) cache stays keyed by the normalized form. With stale rows bypassed, lingualeo goes from 0 to 12 findings: the `available`-gated training-type swaps (`savannah → repetition / word_cards / word_puzzle / brainstorm / phrase_puzzle`, `wordTranslate → wordsCards`, …) now flag end-to-end (GET client-routing + network-aware probe + `available` classified authz). pimsleur 4/4 and busuu 19/19 unchanged.
+
 ## 2026-11-13 15:57 — GET-only forging; network-aware probe window; authz classifier reads keys as words
 Three changes after testing a third app (lingualeo), whose training routes render only after a POST and whose authz field is `available`.
 

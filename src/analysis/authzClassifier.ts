@@ -58,11 +58,17 @@ export class AuthzClassifier {
     //     noise (0.157); split to "is lesson unlocked" it scores 0.431. camelCase/snake/kebab split.
     //  2. Frame it as a yes/no condition ("whether ..."), which is how authorization fields actually
     //     read ("is this unlocked/available?"). This lifts the ambiguous single-word flags the split
-    //     alone can't help — `available` 0.234 -> 0.34 — while 12 negative keys and 8 id-like values
+    //     alone can't help — `available` 0.234 -> 0.405 — while 12 negative keys and 8 id-like values
     //     all stay well below threshold.
-    // Caching by the normalized form also naturally invalidates entries a previous (raw-key) run stored.
+    // The DB store is a pure function of (key, embedding logic), so its key carries CLASSIFIER_VERSION:
+    // changing the normalization/framing above bumps the version, and every stale row a previous run
+    // wrote is bypassed instead of being returned (a single-word key like `available` normalizes to
+    // itself, so without the version it would re-hit its old pre-split score). The in-memory cache is
+    // per-process (one logic version), so it stays keyed by the normalized form — which is also what
+    // tests pre-seed to skip loading the model.
     const norm = normalizeKey(key);
-    const cached = this.cache.get(norm) ?? this.store.get(norm);
+    const storeKey = `${CLASSIFIER_VERSION}:${norm}`;
+    const cached = this.cache.get(norm) ?? this.store.get(storeKey);
     if (cached) {
       this.cache.set(norm, cached);
       return cached;
@@ -77,10 +83,14 @@ export class AuthzClassifier {
     const score = Math.max(...concepts.map((c) => dot(embedding, c)));
     const result = { score, isAuthZRelevant: score >= THRESHOLD };
     this.cache.set(norm, result);
-    this.store.set(norm, result);
+    this.store.set(storeKey, result);
     return result;
   }
 }
+
+// Bump whenever classify's normalization or embedding input changes, to invalidate the persisted
+// authz_classifications rows a previous version wrote. v2: camelCase/snake split + "whether" framing.
+const CLASSIFIER_VERSION = 2;
 
 /** Split camelCase / snake_case / kebab-case into lowercase space-separated words for embedding. */
 export function normalizeKey(key: string): string {

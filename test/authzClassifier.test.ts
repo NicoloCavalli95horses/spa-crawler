@@ -42,8 +42,10 @@ describe('AuthzClassifier', { timeout: 120_000 }, () => {
   it('persists classifications so a fresh classifier backed by the same store skips recomputing', async () => {
     const db = new Database(join(root, 'shared.db'));
     const first = await new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: false })).classify('owner');
-    const store = new AuthzClassificationStore({ db, clearOnStart: false });
-    assert.deepEqual(store.get('owner'), first);
+    // A fresh classifier backed by the same store returns the persisted result (read back through the
+    // public API, not the raw store key, which carries an internal CLASSIFIER_VERSION prefix).
+    const again = await new AuthzClassifier(new AuthzClassificationStore({ db, clearOnStart: false })).classify('owner');
+    assert.deepEqual(again, first);
   });
 
   it('assessAuthZ flags a premium/free prop diff as authz-relevant; a cosmetic diff is not', async () => {
