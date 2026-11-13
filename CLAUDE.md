@@ -13,3 +13,4 @@ RAPIDOR's build must be available in `browser_extension/rapidor`
 - Write in Typescript and always use named parameters/arguments
 - Write comments in English
 - Do NOT create other git branches or move to existing branches without permission
+- Update the CHANGELOG.md file each time (in English)
