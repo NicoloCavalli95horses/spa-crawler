@@ -72,13 +72,19 @@ const WAIT_DOM_IDLE_SRC = `
         lastChange = Date.now();
       });
       observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+      // Network-aware: a route whose content loads through a fetch/XHR (e.g. the app POSTs for the new
+      // view's data, then renders the response) is not "settled" while that request is still in flight,
+      // even if the DOM happens to be momentarily quiet. installInflightTracking exposes the live count
+      // on window.__probeInflight; we refuse to settle while it is > 0, so the eventual render is
+      // caught instead of resolving in the network gap. The ceiling still bounds everything.
+      function busy() { return (window.__probeInflight | 0) > 0; }
       function check() {
         const now = Date.now();
         const elapsed = now - start;
         if (elapsed >= maxWait) {
           observer.disconnect();
           resolve(hasMutatedDom);
-        } else if (hasMutatedDom && elapsed >= minWait && now - lastChange >= idleTime) {
+        } else if (hasMutatedDom && elapsed >= minWait && now - lastChange >= idleTime && !busy()) {
           observer.disconnect();
           resolve(true);
         } else {
@@ -87,6 +93,43 @@ const WAIT_DOM_IDLE_SRC = `
       }
       check();
     });
+  }
+`;
+
+/**
+ * Installs transparent in-flight counters on fetch and XMLHttpRequest (window.__probeInflight), so
+ * waitDomIdle can keep waiting while the route's data request is still loading. Returns an uninstall
+ * function the probe calls in its `finally`, restoring the originals. Wrapped defensively: if the app
+ * froze fetch/XHR or anything throws, tracking is simply skipped (busy() then reads 0, i.e. the old
+ * behaviour) rather than breaking the probe.
+ */
+const INFLIGHT_TRACKER_SRC = `
+  function installInflightTracking() {
+    try {
+      window.__probeInflight = 0;
+      const origFetch = window.fetch;
+      const inc = function () { window.__probeInflight = (window.__probeInflight | 0) + 1; };
+      const dec = function () { window.__probeInflight = Math.max(0, (window.__probeInflight | 0) - 1); };
+      if (typeof origFetch === 'function') {
+        window.fetch = function () {
+          inc();
+          let p;
+          try { p = origFetch.apply(this, arguments); } catch (e) { dec(); throw e; }
+          return Promise.resolve(p).then(function (r) { dec(); return r; }, function (e) { dec(); throw e; });
+        };
+      }
+      const origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.send = function () {
+        inc();
+        this.addEventListener('loadend', dec);
+        return origSend.apply(this, arguments);
+      };
+      return function uninstall() {
+        try { window.fetch = origFetch; XMLHttpRequest.prototype.send = origSend; window.__probeInflight = 0; } catch (e) {}
+      };
+    } catch (e) {
+      return function () {};
+    }
   }
 `;
 
@@ -115,7 +158,7 @@ const WAIT_DOM_IDLE_SRC = `
  * candidate was REJECTED, not accepted. Without this guard that redirect reads identically to a
  * genuine "the app rendered the candidate's content".
  */
-export async function checkClientSideRouting({ page, paramName, paramValue, minWaitMs = 1_000, idleMs = 300, maxWaitMs = 2_500 }: {
+export async function checkClientSideRouting({ page, paramName, paramValue, minWaitMs = 1_000, idleMs = 300, maxWaitMs = 3_000 }: {
   page: Page; paramName: string; paramValue: string; minWaitMs?: number; idleMs?: number; maxWaitMs?: number;
 }): Promise<ClientRoutingResult> {
   const script = `(async () => {
@@ -129,9 +172,11 @@ export async function checkClientSideRouting({ page, paramName, paramValue, minW
     testUrl.searchParams.set(paramName, paramValue);
 
     ${WAIT_DOM_IDLE_SRC}
+    ${INFLIGHT_TRACKER_SRC}
 
     let hasMutatedDom = false;
     let finalUrl = originalUrl;
+    const uninstallInflight = installInflightTracking(); // before the popstate that triggers the app's fetches
     try {
       window.history.pushState({ ignore: true }, '', testUrl);
       // started BEFORE dispatchEvent: see WAIT_DOM_IDLE_SRC's doc comment above.
@@ -140,6 +185,7 @@ export async function checkClientSideRouting({ page, paramName, paramValue, minW
       hasMutatedDom = await idle;
       finalUrl = window.location.href; // read before the rollback below moves it back
     } finally {
+      uninstallInflight();
       window.history.pushState({ ignore: true }, '', originalUrl);
       window.dispatchEvent(new Event('popstate'));
     }
@@ -181,7 +227,7 @@ export async function checkClientSideRouting({ page, paramName, paramValue, minW
  * segment at all, so hasMutatedDom used to be the ENTIRE signal — any redirect-away looked identical
  * to a genuine accept.
  */
-export async function checkClientSideRoutingForPath({ page, targetUrl, candidateValue, minWaitMs = 1_000, idleMs = 300, maxWaitMs = 2_500 }: {
+export async function checkClientSideRoutingForPath({ page, targetUrl, candidateValue, minWaitMs = 1_000, idleMs = 300, maxWaitMs = 3_000 }: {
   page: Page; targetUrl: string; candidateValue?: string; minWaitMs?: number; idleMs?: number; maxWaitMs?: number;
 }): Promise<ClientRoutingResult> {
   const script = `(async () => {
@@ -189,9 +235,11 @@ export async function checkClientSideRoutingForPath({ page, targetUrl, candidate
     const originalUrl = window.location.href;
 
     ${WAIT_DOM_IDLE_SRC}
+    ${INFLIGHT_TRACKER_SRC}
 
     let hasMutatedDom = false;
     let finalUrl = originalUrl;
+    const uninstallInflight = installInflightTracking(); // before the popstate that triggers the app's fetches
     try {
       window.history.pushState({ ignore: true }, '', targetUrl);
       // started BEFORE dispatchEvent: see WAIT_DOM_IDLE_SRC's doc comment above.
@@ -200,6 +248,7 @@ export async function checkClientSideRoutingForPath({ page, targetUrl, candidate
       hasMutatedDom = await idle;
       finalUrl = window.location.href; // read before the rollback below moves it back
     } finally {
+      uninstallInflight();
       window.history.pushState({ ignore: true }, '', originalUrl);
       window.dispatchEvent(new Event('popstate'));
     }

@@ -161,7 +161,7 @@ export const config: Readonly<CrawlConfig> = Object.freeze({
     timeBetweenRequestsMs: 250,
     clientRoutingConcurrency: 5,
     reportsDir: 'reports',
-    clientRoutingProbe: { minWaitMs: 1_000, idleMs: 300, maxWaitMs: 2_500 },
+    clientRoutingProbe: { minWaitMs: 1_000, idleMs: 300, maxWaitMs: 3_000 },
     // ABLATION_MODE=true npm start to turn it on from the shell instead of editing this file
     ablationMode: process.env.ABLATION_MODE === 'true',
     // a value in more than this many preindexed nodes is a generic keyword, not an identifier: skipped
